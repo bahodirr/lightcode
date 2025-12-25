@@ -17,7 +17,7 @@ if (!Script.preview) {
     .then((data: any) => data.tag_name.replace(/^v/, ""))
 
   const log =
-    await $`git log v${previous}..HEAD --oneline --format="%h %s" -- packages/opencode packages/sdk packages/plugin packages/desktop packages/app`.text()
+    await $`git log v${previous}..HEAD --oneline --format="%h %s" -- packages/opencode packages/sdk packages/plugin`.text()
 
   const commits = log.split("\n").filter((line) => line && !line.match(/^\w+ (ignore:|test:|chore:|ci:)/i))
 
@@ -63,15 +63,13 @@ if (!Script.preview) {
             ${commits.join("\n")}
 
             Group the changes into these categories based on the [areas: ...] tags (omit any category with no changes):
-            - **TUI**: Changes to "opencode" area (the terminal/CLI interface)
-            - **Desktop**: Changes to "app" or "tauri" areas (the desktop application)
+            - **Server**: Changes to "opencode" area (the headless server/agent)
             - **SDK**: Changes to "sdk" or "plugin" areas (the SDK and plugin system)
-            - **Extensions**: Changes to "extensions/zed", "extensions/vscode", or "github" areas (editor extensions and GitHub Action)
             - **Other**: Any user-facing changes that don't fit the above categories
 
             Excluded areas (omit these entirely unless they contain user-facing changes like refactors that may affect behavior):
-            - "nix", "infra", "script" - CI/build infrastructure
-            - "ui", "docs", "web", "console", "enterprise", "function", "util", "identity", "slack" - internal packages
+            - "script" - CI/build infrastructure
+            - "util" - internal packages
 
             Rules:
             - Use the [areas: ...] tags to determine the correct category. If a commit touches multiple areas, put it in the most relevant user-facing category.
@@ -88,19 +86,14 @@ if (!Script.preview) {
             IMPORTANT: ONLY return the grouped changelog, do not include any other information. Do not include a preamble like "Based on my analysis..." or "Here is the changelog..."
 
             <example>
-            ## TUI
+            ## Server
             - Added experimental support for the Ty language server (@OpeOginni)
-            - Added /fork slash command for keyboard-friendly session forking (@ariane-emory)
             - Increased retry attempts for failed requests
-            - Fixed model validation before executing slash commands (@devxoul)
+            - Fixed model validation (@devxoul)
 
-            ## Desktop
-            - Added shell mode support
-            - Fixed prompt history navigation and optimistic prompt duplication
-            - Disabled pinch-to-zoom on Linux (@Brendonovich)
-
-            ## Extensions
-            - Added OIDC_BASE_URL support for custom GitHub App installations (@elithrar)
+            ## SDK
+            - Added new session.prompt_async endpoint
+            - Fixed TypeScript types for tool registry
             </example>
           `,
             },
@@ -171,13 +164,6 @@ for (const file of pkgjsons) {
   console.log("updated:", file)
   await Bun.file(file).write(pkg)
 }
-
-const extensionToml = new URL("../packages/extensions/zed/extension.toml", import.meta.url).pathname
-let toml = await Bun.file(extensionToml).text()
-toml = toml.replace(/^version = "[^"]+"/m, `version = "${Script.version}"`)
-toml = toml.replaceAll(/releases\/download\/v[^/]+\//g, `releases/download/v${Script.version}/`)
-console.log("updated:", extensionToml)
-await Bun.file(extensionToml).write(toml)
 
 await $`bun install`
 
