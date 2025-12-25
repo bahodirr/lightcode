@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
-import { Script } from "@opencode-ai/script"
 import { $ } from "bun"
 
 const dir = new URL("..", import.meta.url).pathname
 process.chdir(dir)
+
+const TAG = process.env.NPM_TAG || "latest"
 
 await import("./build")
 
@@ -20,5 +21,5 @@ for (const [key, value] of Object.entries(pkg.exports)) {
 }
 await Bun.write("package.json", JSON.stringify(pkg, null, 2))
 await $`bun pm pack`
-await $`npm publish *.tgz --tag ${Script.channel} --access public`
+await $`npm publish *.tgz --tag ${TAG} --access public`
 await Bun.write("package.json", JSON.stringify(original, null, 2))
