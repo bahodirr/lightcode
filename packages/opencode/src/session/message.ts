@@ -143,17 +143,16 @@ export namespace Message {
             .discriminatedUnion("name", [AuthError.Schema, NamedError.Unknown.Schema, OutputLengthError.Schema])
             .optional(),
           sessionID: z.string(),
-          tool: z.record(
-            z.string(),
-            z
-              .object({
-                title: z.string(),
-                snapshot: z.string().optional(),
-                time: z.object({
-                  start: z.number(),
-                  end: z.number(),
-                }),
-              })
+      tool: z.record(
+        z.string(),
+        z
+          .object({
+            title: z.string(),
+            time: z.object({
+              start: z.number(),
+              end: z.number(),
+            }),
+          })
               .catchall(z.any()),
           ),
           assistant: z
@@ -178,7 +177,6 @@ export namespace Message {
               }),
             })
             .optional(),
-          snapshot: z.string().optional(),
         })
         .meta({ ref: "MessageMetadata" }),
     })

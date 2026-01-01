@@ -46,12 +46,12 @@ export namespace Command {
       [Default.INIT]: {
         name: Default.INIT,
         description: "create/update AGENTS.md",
-        template: PROMPT_INITIALIZE.replace("${path}", Instance.worktree),
+        template: PROMPT_INITIALIZE.replace("${path}", Instance.directory),
       },
       [Default.REVIEW]: {
         name: Default.REVIEW,
         description: "review changes [commit|branch|pr], defaults to uncommitted",
-        template: PROMPT_REVIEW.replace("${path}", Instance.worktree),
+        template: PROMPT_REVIEW.replace("${path}", Instance.directory),
         subtask: true,
       },
     }

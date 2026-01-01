@@ -1,8 +1,5 @@
 import { Ripgrep } from "../file/ripgrep"
-import { Global } from "../global"
-import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
-import { Skill } from "../skill"
 
 import { Instance } from "../project/instance"
 import path from "path"
@@ -10,7 +7,6 @@ import os from "os"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
-import PROMPT_POLARIS from "./prompt/polaris.txt"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_ANTHROPIC_SPOOF from "./prompt/anthropic_spoof.txt"
@@ -30,30 +26,24 @@ export namespace SystemPrompt {
       return [PROMPT_BEAST]
     if (model.api.id.includes("gemini-")) return [PROMPT_GEMINI]
     if (model.api.id.includes("claude")) return [PROMPT_ANTHROPIC]
-    if (model.api.id.includes("polaris-alpha")) return [PROMPT_POLARIS]
     return [PROMPT_ANTHROPIC_WITHOUT_TODO]
   }
 
   export async function environment() {
-    const project = Instance.project
+    const tree = await Ripgrep.tree({
+      cwd: Instance.directory,
+      limit: 200,
+    }).catch(() => "")
     return [
       [
         `Here is some useful information about the environment you are running in:`,
         `<env>`,
         `  Working directory: ${Instance.directory}`,
-        `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
         `  Platform: ${process.platform}`,
         `  Today's date: ${new Date().toDateString()}`,
         `</env>`,
         `<files>`,
-        `  ${
-          project.vcs === "git"
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 200,
-              })
-            : ""
-        }`,
+        `  ${tree}`,
         `</files>`,
       ].join("\n"),
     ]
@@ -62,28 +52,15 @@ export namespace SystemPrompt {
   const LOCAL_RULE_FILES = [
     "AGENTS.md",
     "CLAUDE.md",
-    "CONTEXT.md", // deprecated
   ]
-  const GLOBAL_RULE_FILES = [
-    path.join(Global.Path.config, "AGENTS.md"),
-    path.join(os.homedir(), ".claude", "CLAUDE.md"),
-  ]
-
   export async function custom() {
     const config = await Config.get()
     const paths = new Set<string>()
 
     for (const localRuleFile of LOCAL_RULE_FILES) {
-      const matches = await Filesystem.findUp(localRuleFile, Instance.directory, Instance.worktree)
-      if (matches.length > 0) {
-        matches.forEach((path) => paths.add(path))
-        break
-      }
-    }
-
-    for (const globalRuleFile of GLOBAL_RULE_FILES) {
-      if (await Bun.file(globalRuleFile).exists()) {
-        paths.add(globalRuleFile)
+      const candidate = path.join(Instance.directory, localRuleFile)
+      if (await Bun.file(candidate).exists()) {
+        paths.add(candidate)
         break
       }
     }
@@ -103,9 +80,16 @@ export namespace SystemPrompt {
             }),
           ).catch(() => [])
         } else {
-          matches = await Filesystem.globUp(instruction, Instance.directory, Instance.worktree).catch(() => [])
+          matches = await Array.fromAsync(
+            new Bun.Glob(instruction).scan({
+              cwd: Instance.directory,
+              absolute: true,
+              onlyFiles: true,
+              dot: true,
+            }),
+          ).catch(() => [])
         }
-        matches.forEach((path) => paths.add(path))
+        matches.forEach((match) => paths.add(match))
       }
     }
 

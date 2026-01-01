@@ -6,7 +6,6 @@
 import z from "zod"
 import * as path from "path"
 import { Tool } from "./tool"
-import { LSP } from "../lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import { Permission } from "../permission"
 import DESCRIPTION from "./edit.txt"
@@ -16,9 +15,6 @@ import { FileTime } from "../file/time"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
-import { Snapshot } from "@/snapshot"
-
-const MAX_DIAGNOSTICS_PER_FILE = 20
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -137,20 +133,7 @@ export const EditTool = Tool.define("edit", {
       FileTime.read(ctx.sessionID, filePath)
     })
 
-    let output = ""
-    await LSP.touchFile(filePath, true)
-    const diagnostics = await LSP.diagnostics()
-    const normalizedFilePath = Filesystem.normalizePath(filePath)
-    const issues = diagnostics[normalizedFilePath] ?? []
-    if (issues.length > 0) {
-      const errors = issues.filter((item) => item.severity === 1)
-      const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
-      const suffix =
-        errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
-      output += `\nThis file has errors, please fix\n<file_diagnostics>\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</file_diagnostics>\n`
-    }
-
-    const filediff: Snapshot.FileDiff = {
+    const filediff = {
       file: filePath,
       before: contentOld,
       after: contentNew,
@@ -164,12 +147,11 @@ export const EditTool = Tool.define("edit", {
 
     return {
       metadata: {
-        diagnostics,
         diff,
         filediff,
       },
-      title: `${path.relative(Instance.worktree, filePath)}`,
-      output,
+      title: `${path.relative(Instance.directory, filePath)}`,
+      output: "",
     }
   },
 })

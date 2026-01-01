@@ -1,7 +1,4 @@
 import z from "zod"
-import { Filesystem } from "../util/filesystem"
-import path from "path"
-import { $ } from "bun"
 import { Storage } from "../storage/storage"
 import { Log } from "../util/log"
 import { Flag } from "@/flag/flag"
@@ -9,7 +6,6 @@ import { Session } from "../session"
 import { work } from "../util/queue"
 import { fn } from "@opencode-ai/util/fn"
 import { BusEvent } from "@/bus/bus-event"
-import { iife } from "@/util/iife"
 import { GlobalBus } from "@/bus/global"
 
 export namespace Project {
@@ -17,8 +13,7 @@ export namespace Project {
   export const Info = z
     .object({
       id: z.string(),
-      worktree: z.string(),
-      vcs: z.literal("git").optional(),
+      directory: z.string(),
       name: z.string().optional(),
       icon: z
         .object({
@@ -44,74 +39,27 @@ export namespace Project {
   export async function fromDirectory(directory: string) {
     log.info("fromDirectory", { directory })
 
-    const { id, worktree, vcs } = await iife(async () => {
-      const matches = Filesystem.up({ targets: [".git"], start: directory })
-      const git = await matches.next().then((x) => x.value)
-      await matches.return()
-      if (git) {
-        let worktree = path.dirname(git)
-        let id = await Bun.file(path.join(git, "opencode"))
-          .text()
-          .then((x) => x.trim())
-          .catch(() => {})
-        if (!id) {
-          const roots = await $`git rev-list --max-parents=0 --all`
-            .quiet()
-            .nothrow()
-            .cwd(worktree)
-            .text()
-            .then((x) =>
-              x
-                .split("\n")
-                .filter(Boolean)
-                .map((x) => x.trim())
-                .toSorted(),
-            )
-          id = roots[0]
-          if (id) Bun.file(path.join(git, "opencode")).write(id)
-        }
-        if (!id)
-          return {
-            id: "global",
-            worktree,
-            vcs: "git",
-          }
-        worktree = await $`git rev-parse --show-toplevel`
-          .quiet()
-          .nothrow()
-          .cwd(worktree)
-          .text()
-          .then((x) => path.resolve(worktree, x.trim()))
-        return { id, worktree, vcs: "git" }
-      }
-
-      return {
-        id: "global",
-        worktree: "/",
-        vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
-      }
-    })
+    const directoryPath = directory
+    const id = `dir_${Bun.hash.xxHash32(directoryPath).toString(16)}`
 
     let existing = await Storage.read<Info>(["project", id]).catch(() => undefined)
     if (!existing) {
       existing = {
         id,
-        worktree,
-        vcs: vcs as Info["vcs"],
+        directory: directoryPath,
         time: {
           created: Date.now(),
           updated: Date.now(),
         },
       }
       if (id !== "global") {
-        await migrateFromGlobal(id, worktree)
+        await migrateFromGlobal(id, directoryPath)
       }
     }
     if (Flag.OPENCODE_EXPERIMENTAL_ICON_DISCOVERY) discover(existing)
     const result: Info = {
       ...existing,
-      worktree,
-      vcs: vcs as Info["vcs"],
+      directory: directoryPath,
       time: {
         ...existing.time,
         updated: Date.now(),
@@ -128,12 +76,11 @@ export namespace Project {
   }
 
   export async function discover(input: Info) {
-    if (input.vcs !== "git") return
     if (input.icon?.url) return
     const glob = new Bun.Glob("**/{favicon}.{ico,png,svg,jpg,jpeg,webp}")
     const matches = await Array.fromAsync(
       glob.scan({
-        cwd: input.worktree,
+        cwd: input.directory,
         absolute: true,
         onlyFiles: true,
         followSymlinks: false,
@@ -156,20 +103,20 @@ export namespace Project {
     return
   }
 
-  async function migrateFromGlobal(newProjectID: string, worktree: string) {
+  async function migrateFromGlobal(newProjectID: string, directory: string) {
     const globalProject = await Storage.read<Info>(["project", "global"]).catch(() => undefined)
     if (!globalProject) return
 
     const globalSessions = await Storage.list(["session", "global"]).catch(() => [])
     if (globalSessions.length === 0) return
 
-    log.info("migrating sessions from global", { newProjectID, worktree, count: globalSessions.length })
+    log.info("migrating sessions from global", { newProjectID, directory, count: globalSessions.length })
 
     await work(10, globalSessions, async (key) => {
       const sessionID = key[key.length - 1]
       const session = await Storage.read<Session.Info>(key).catch(() => undefined)
       if (!session) return
-      if (session.directory && session.directory !== worktree) return
+      if (session.directory && session.directory !== directory) return
 
       session.projectID = newProjectID
       log.info("migrating session", { sessionID, from: "global", to: newProjectID })

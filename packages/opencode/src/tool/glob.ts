@@ -54,7 +54,7 @@ export const GlobTool = Tool.define("glob", {
     }
 
     return {
-      title: path.relative(Instance.worktree, search),
+      title: path.relative(Instance.directory, search),
       metadata: {
         count: files.length,
         truncated,

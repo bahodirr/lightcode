@@ -7,7 +7,6 @@ import { GlobalBus } from "@/bus/global"
 
 interface Context {
   directory: string
-  worktree: string
   project: Project.Info
 }
 const context = Context.create<Context>("instance")
@@ -22,7 +21,6 @@ export const Instance = {
         const project = await Project.fromDirectory(input.directory)
         const ctx = {
           directory: input.directory,
-          worktree: project.worktree,
           project,
         }
         await context.provide(ctx, async () => {
@@ -39,9 +37,6 @@ export const Instance = {
   },
   get directory() {
     return context.use().directory
-  },
-  get worktree() {
-    return context.use().worktree
   },
   get project() {
     return context.use().project

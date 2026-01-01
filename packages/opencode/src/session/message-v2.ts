@@ -5,8 +5,6 @@ import { NamedError } from "@opencode-ai/util/error"
 import { Message } from "./message"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
 import { Identifier } from "../id/id"
-import { LSP } from "../lsp"
-import { Snapshot } from "@/snapshot"
 import { fn } from "@/util/fn"
 import { Storage } from "@/storage/storage"
 import { ProviderTransform } from "@/provider/transform"
@@ -42,23 +40,6 @@ export namespace MessageV2 {
     sessionID: z.string(),
     messageID: z.string(),
   })
-
-  export const SnapshotPart = PartBase.extend({
-    type: z.literal("snapshot"),
-    snapshot: z.string(),
-  }).meta({
-    ref: "SnapshotPart",
-  })
-  export type SnapshotPart = z.infer<typeof SnapshotPart>
-
-  export const PatchPart = PartBase.extend({
-    type: z.literal("patch"),
-    hash: z.string(),
-    files: z.string().array(),
-  }).meta({
-    ref: "PatchPart",
-  })
-  export type PatchPart = z.infer<typeof PatchPart>
 
   export const TextPart = PartBase.extend({
     type: z.literal("text"),
@@ -102,6 +83,22 @@ export namespace MessageV2 {
       }),
   })
 
+  const Range = z
+    .object({
+      start: z.object({
+        line: z.number(),
+        character: z.number(),
+      }),
+      end: z.object({
+        line: z.number(),
+        character: z.number(),
+      }),
+    })
+    .meta({
+      ref: "Range",
+    })
+  export type Range = z.infer<typeof Range>
+
   export const FileSource = FilePartSourceBase.extend({
     type: z.literal("file"),
     path: z.string(),
@@ -112,7 +109,7 @@ export namespace MessageV2 {
   export const SymbolSource = FilePartSourceBase.extend({
     type: z.literal("symbol"),
     path: z.string(),
-    range: LSP.Range,
+    range: Range,
     name: z.string(),
     kind: z.number().int(),
   }).meta({
@@ -180,7 +177,6 @@ export namespace MessageV2 {
 
   export const StepStartPart = PartBase.extend({
     type: z.literal("step-start"),
-    snapshot: z.string().optional(),
   }).meta({
     ref: "StepStartPart",
   })
@@ -189,7 +185,6 @@ export namespace MessageV2 {
   export const StepFinishPart = PartBase.extend({
     type: z.literal("step-finish"),
     reason: z.string(),
-    snapshot: z.string().optional(),
     cost: z.number(),
     tokens: z.object({
       input: z.number(),
@@ -204,6 +199,15 @@ export namespace MessageV2 {
     ref: "StepFinishPart",
   })
   export type StepFinishPart = z.infer<typeof StepFinishPart>
+
+  export const PatchPart = PartBase.extend({
+    type: z.literal("patch"),
+    hash: z.string(),
+    files: z.string().array(),
+  }).meta({
+    ref: "PatchPart",
+  })
+  export type PatchPart = z.infer<typeof PatchPart>
 
   export const ToolStatePending = z
     .object({
@@ -298,7 +302,6 @@ export namespace MessageV2 {
       .object({
         title: z.string().optional(),
         body: z.string().optional(),
-        diffs: Snapshot.FileDiff.array(),
       })
       .optional(),
     agent: z.string(),
@@ -322,7 +325,6 @@ export namespace MessageV2 {
       ToolPart,
       StepStartPart,
       StepFinishPart,
-      SnapshotPart,
       PatchPart,
       AgentPart,
       RetryPart,
