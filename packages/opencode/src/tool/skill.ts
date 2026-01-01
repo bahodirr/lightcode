@@ -86,7 +86,7 @@ export const SkillTool: Tool.Info<typeof parameters> = {
         const parsed = await ConfigMarkdown.parse(skill.location)
         const dir = path.dirname(skill.location)
 
-        // Format output similar to plugin pattern
+        // Format output with the standard tool pattern
         const output = [`## Skill: ${skill.name}`, "", `**Base directory**: ${dir}`, "", parsed.content.trim()].join(
           "\n",
         )

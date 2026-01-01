@@ -15,14 +15,19 @@ import { Tool } from "./tool"
 import { Instance } from "../project/instance"
 import { Config } from "../config/config"
 import path from "path"
-import { type ToolDefinition } from "@opencode-ai/plugin"
 import z from "zod"
-import { Plugin } from "../plugin"
 import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
-import { LspTool } from "./lsp"
+
+type ToolContext = Pick<Tool.Context, "sessionID" | "messageID" | "agent" | "abort">
+
+type ToolDefinition<Args extends z.ZodRawShape = z.ZodRawShape> = {
+  description: string
+  args: Args
+  execute(args: z.infer<z.ZodObject<Args>>, context: ToolContext): Promise<string>
+}
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -41,22 +46,15 @@ export namespace ToolRegistry {
         const namespace = path.basename(match, path.extname(match))
         const mod = await import(match)
         for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-          custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
+          custom.push(fromToolDefinition(id === "default" ? namespace : `${namespace}_${id}`, def))
         }
-      }
-    }
-
-    const plugins = await Plugin.list()
-    for (const plugin of plugins) {
-      for (const [id, def] of Object.entries(plugin.tool ?? {})) {
-        custom.push(fromPlugin(id, def))
       }
     }
 
     return { custom }
   })
 
-  function fromPlugin(id: string, def: ToolDefinition): Tool.Info {
+  function fromToolDefinition(id: string, def: ToolDefinition): Tool.Info {
     return {
       id,
       init: async () => ({
@@ -103,7 +101,6 @@ export namespace ToolRegistry {
       WebSearchTool,
       CodeSearchTool,
       SkillTool,
-      ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
       ...custom,
     ]

@@ -22,5 +22,3 @@ await Log.init({ print: true, level: logLevel, dev: false })
 
 const server = Server.listen({ port, hostname: host })
 console.log(`OpenCode running at http://${host}:${server.port}`)
-console.log(`API docs: http://${host}:${server.port}/doc`)
-

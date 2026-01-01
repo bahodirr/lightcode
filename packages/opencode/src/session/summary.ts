@@ -5,14 +5,7 @@ import z from "zod"
 import { Session } from "."
 
 import { MessageV2 } from "./message-v2"
-import { Identifier } from "@/id/id"
-import { Snapshot } from "@/snapshot"
-
 import { Log } from "@/util/log"
-import path from "path"
-import { Instance } from "@/project/instance"
-import { Storage } from "@/storage/storage"
-import { Bus } from "@/bus"
 
 import { LLM } from "./llm"
 import { Agent } from "@/agent/agent"
@@ -35,29 +28,12 @@ export namespace SessionSummary {
   )
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
-    const files = new Set(
-      input.messages
-        .flatMap((x) => x.parts)
-        .filter((x) => x.type === "patch")
-        .flatMap((x) => x.files)
-        .map((x) => path.relative(Instance.worktree, x)),
-    )
-    const diffs = await computeDiff({ messages: input.messages }).then((x) =>
-      x.filter((x) => {
-        return files.has(x.file)
-      }),
-    )
     await Session.update(input.sessionID, (draft) => {
       draft.summary = {
-        additions: diffs.reduce((sum, x) => sum + x.additions, 0),
-        deletions: diffs.reduce((sum, x) => sum + x.deletions, 0),
-        files: diffs.length,
+        additions: 0,
+        deletions: 0,
+        files: 0,
       }
-    })
-    await Storage.write(["session_diff", input.sessionID], diffs)
-    Bus.publish(Session.Event.Diff, {
-      sessionID: input.sessionID,
-      diff: diffs,
     })
   }
 
@@ -67,10 +43,8 @@ export namespace SessionSummary {
     )
     const msgWithParts = messages.find((m) => m.info.id === input.messageID)!
     const userMsg = msgWithParts.info as MessageV2.User
-    const diffs = await computeDiff({ messages })
     userMsg.summary = {
       ...userMsg.summary,
-      diffs,
     }
     await Session.updateMessage(userMsg)
 
@@ -116,79 +90,39 @@ export namespace SessionSummary {
           m.info.role === "assistant" && m.parts.some((p) => p.type === "step-finish" && p.reason !== "tool-calls"),
       )
     ) {
-      if (diffs.length > 0) {
-        for (const msg of messages) {
-          for (const part of msg.parts) {
-            if (part.type === "tool" && part.state.status === "completed") {
-              part.state.output = "[TOOL OUTPUT PRUNED]"
-            }
+      for (const msg of messages) {
+        for (const part of msg.parts) {
+          if (part.type === "tool" && part.state.status === "completed") {
+            part.state.output = "[TOOL OUTPUT PRUNED]"
           }
         }
-        const summaryAgent = await Agent.get("summary")
-        const stream = await LLM.stream({
-          agent: summaryAgent,
-          user: userMsg,
-          tools: {},
-          model: summaryAgent.model
-            ? await Provider.getModel(summaryAgent.model.providerID, summaryAgent.model.modelID)
-            : small,
-          small: true,
-          messages: [
-            ...MessageV2.toModelMessage(messages),
-            {
-              role: "user" as const,
-              content: `Summarize the above conversation according to your system prompts.`,
-            },
-          ],
-          abort: new AbortController().signal,
-          sessionID: userMsg.sessionID,
-          system: [],
-          retries: 3,
-        })
-        const result = await stream.text
-        if (result) {
-          userMsg.summary.body = result
-        }
+      }
+      const summaryAgent = await Agent.get("summary")
+      const stream = await LLM.stream({
+        agent: summaryAgent,
+        user: userMsg,
+        tools: {},
+        model: summaryAgent.model
+          ? await Provider.getModel(summaryAgent.model.providerID, summaryAgent.model.modelID)
+          : small,
+        small: true,
+        messages: [
+          ...MessageV2.toModelMessage(messages),
+          {
+            role: "user" as const,
+            content: `Summarize the above conversation according to your system prompts.`,
+          },
+        ],
+        abort: new AbortController().signal,
+        sessionID: userMsg.sessionID,
+        system: [],
+        retries: 3,
+      })
+      const result = await stream.text
+      if (result) {
+        userMsg.summary.body = result
       }
       await Session.updateMessage(userMsg)
     }
-  }
-
-  export const diff = fn(
-    z.object({
-      sessionID: Identifier.schema("session"),
-      messageID: Identifier.schema("message").optional(),
-    }),
-    async (input) => {
-      return Storage.read<Snapshot.FileDiff[]>(["session_diff", input.sessionID]).catch(() => [])
-    },
-  )
-
-  async function computeDiff(input: { messages: MessageV2.WithParts[] }) {
-    let from: string | undefined
-    let to: string | undefined
-
-    // scan assistant messages to find earliest from and latest to
-    // snapshot
-    for (const item of input.messages) {
-      if (!from) {
-        for (const part of item.parts) {
-          if (part.type === "step-start" && part.snapshot) {
-            from = part.snapshot
-            break
-          }
-        }
-      }
-
-      for (const part of item.parts) {
-        if (part.type === "step-finish" && part.snapshot) {
-          to = part.snapshot
-          break
-        }
-      }
-    }
-
-    if (from && to) return Snapshot.diffFull(from, to)
-    return []
   }
 }

@@ -5,7 +5,6 @@ import z from "zod"
 import { Identifier } from "../id/id"
 import { MessageV2 } from "./message-v2"
 import { Log } from "../util/log"
-import { SessionRevert } from "./revert"
 import { Session } from "."
 import { Agent } from "../agent/agent"
 import { Provider } from "../provider/provider"
@@ -15,16 +14,14 @@ import { Instance } from "../project/instance"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider/transform"
 import { SystemPrompt } from "./system"
-import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { defer } from "../util/defer"
-import { clone, mergeDeep, pipe } from "remeda"
+import { mergeDeep, pipe } from "remeda"
 import { ToolRegistry } from "../tool/registry"
 import { Wildcard } from "../util/wildcard"
 import { MCP } from "../mcp"
-import { LSP } from "../lsp"
 import { ReadTool } from "../tool/read"
 import { ListTool } from "../tool/ls"
 import { FileTime } from "../file/time"
@@ -139,7 +136,6 @@ export namespace SessionPrompt {
 
   export const prompt = fn(PromptInput, async (input) => {
     const session = await Session.get(input.sessionID)
-    await SessionRevert.cleanup(session)
 
     const message = await createUserMessage(input)
     await Session.touch(input.sessionID)
@@ -167,7 +163,7 @@ export namespace SessionPrompt {
         seen.add(name)
         const filepath = name.startsWith("~/")
           ? path.join(os.homedir(), name.slice(2))
-          : path.resolve(Instance.worktree, name)
+          : path.resolve(Instance.directory, name)
 
         const stats = await fs.stat(filepath).catch(() => undefined)
         if (!stats) {
@@ -298,7 +294,7 @@ export namespace SessionPrompt {
           agent: task.agent,
           path: {
             cwd: Instance.directory,
-            root: Instance.worktree,
+            root: Instance.directory,
           },
           cost: 0,
           tokens: {
@@ -339,15 +335,6 @@ export namespace SessionPrompt {
           subagent_type: task.agent,
           command: task.command,
         }
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: "task",
-            sessionID,
-            callID: part.id,
-          },
-          { args: taskArgs },
-        )
         let executionError: Error | undefined
         const result = await taskTool
           .execute(taskArgs, {
@@ -371,15 +358,6 @@ export namespace SessionPrompt {
             log.error("subtask execution failed", { error, agent: task.agent, description: task.description })
             return undefined
           })
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: "task",
-            sessionID,
-            callID: part.id,
-          },
-          result,
-        )
         assistantMessage.finish = "tool-calls"
         assistantMessage.time.completed = Date.now()
         await Session.updateMessage(assistantMessage)
@@ -488,7 +466,7 @@ export namespace SessionPrompt {
           agent: agent.name,
           path: {
             cwd: Instance.directory,
-            root: Instance.worktree,
+            root: Instance.directory,
           },
           cost: 0,
           tokens: {
@@ -523,9 +501,7 @@ export namespace SessionPrompt {
         })
       }
 
-      const sessionMessages = clone(msgs)
-
-      await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
+      const sessionMessages = msgs
 
       const result = await processor.process({
         user: lastUser,
@@ -591,17 +567,6 @@ export namespace SessionPrompt {
         description: item.description,
         inputSchema: jsonSchema(schema as any),
         async execute(args, options) {
-          await Plugin.trigger(
-            "tool.execute.before",
-            {
-              tool: item.id,
-              sessionID: input.sessionID,
-              callID: options.toolCallId,
-            },
-            {
-              args,
-            },
-          )
           const result = await item.execute(args, {
             sessionID: input.sessionID,
             abort: options.abortSignal!,
@@ -627,15 +592,6 @@ export namespace SessionPrompt {
               }
             },
           })
-          await Plugin.trigger(
-            "tool.execute.after",
-            {
-              tool: item.id,
-              sessionID: input.sessionID,
-              callID: options.toolCallId,
-            },
-            result,
-          )
           return result
         },
         toModelOutput(result) {
@@ -651,30 +607,9 @@ export namespace SessionPrompt {
       const execute = item.execute
       if (!execute) continue
 
-      // Wrap execute to add plugin hooks and format output
+      // Wrap execute to normalize output and attach content ordering.
       item.execute = async (args, opts) => {
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: key,
-            sessionID: input.sessionID,
-            callID: opts.toolCallId,
-          },
-          {
-            args,
-          },
-        )
         const result = await execute(args, opts)
-
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: key,
-            sessionID: input.sessionID,
-            callID: opts.toolCallId,
-          },
-          result,
-        )
 
         const textParts: string[] = []
         const attachments: MessageV2.FilePart[] = []
@@ -781,28 +716,8 @@ export namespace SessionPrompt {
                   end: url.searchParams.get("end"),
                 }
                 if (range.start != null) {
-                  const filePathURI = part.url.split("?")[0]
                   let start = parseInt(range.start)
                   let end = range.end ? parseInt(range.end) : undefined
-                  // some LSP servers (eg, gopls) don't give full range in
-                  // workspace/symbol searches, so we'll try to find the
-                  // symbol in the document to get the full range
-                  if (start === end) {
-                    const symbols = await LSP.documentSymbol(filePathURI)
-                    for (const symbol of symbols) {
-                      let range: LSP.Range | undefined
-                      if ("range" in symbol) {
-                        range = symbol.range
-                      } else if ("location" in symbol) {
-                        range = symbol.location.range
-                      }
-                      if (range?.start?.line && range?.start?.line === start) {
-                        start = range.start.line
-                        end = range?.end?.line ?? start
-                        break
-                      }
-                    }
-                  }
                   offset = Math.max(start - 1, 0)
                   if (end) {
                     limit = end - offset
@@ -976,20 +891,6 @@ export namespace SessionPrompt {
       }),
     ).then((x) => x.flat())
 
-    await Plugin.trigger(
-      "chat.message",
-      {
-        sessionID: input.sessionID,
-        agent: input.agent,
-        model: input.model,
-        messageID: input.messageID,
-      },
-      {
-        message: info,
-        parts,
-      },
-    )
-
     await Session.updateMessage(info)
     for (const part of parts) {
       await Session.updatePart(part)
@@ -1048,10 +949,6 @@ export namespace SessionPrompt {
     }
     using _ = defer(() => cancel(input.sessionID))
 
-    const session = await Session.get(input.sessionID)
-    if (session.revert) {
-      SessionRevert.cleanup(session)
-    }
     const agent = await Agent.get(input.agent)
     const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const userMsg: MessageV2.User = {
@@ -1087,7 +984,7 @@ export namespace SessionPrompt {
       cost: 0,
       path: {
         cwd: Instance.directory,
-        root: Instance.worktree,
+        root: Instance.directory,
       },
       time: {
         created: Date.now(),

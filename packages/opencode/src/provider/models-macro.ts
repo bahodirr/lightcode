@@ -6,6 +6,9 @@ export async function data() {
       return await file.text()
     }
   }
-  const json = await fetch("https://models.dev/api.json").then((x) => x.text())
-  return json
+  const local = Bun.file(new URL("./models.local.json", import.meta.url))
+  if (await local.exists()) {
+    return await local.text()
+  }
+  return "{}"
 }

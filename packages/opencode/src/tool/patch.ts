@@ -4,8 +4,6 @@ import * as fs from "fs/promises"
 import { Tool } from "./tool"
 import { FileTime } from "../file/time"
 import { Permission } from "../permission"
-import { Bus } from "../bus"
-import { FileWatcher } from "../file/watcher"
 import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 import { Patch } from "../patch"
@@ -213,13 +211,8 @@ export const PatchTool = Tool.define("patch", {
       }
     }
 
-    // Publish file change events
-    for (const filePath of changedFiles) {
-      await Bus.publish(FileWatcher.Event.Updated, { file: filePath, event: "change" })
-    }
-
     // Generate output summary
-    const relativePaths = changedFiles.map((filePath) => path.relative(Instance.worktree, filePath))
+    const relativePaths = changedFiles.map((filePath) => path.relative(Instance.directory, filePath))
     const summary = `${fileChanges.length} files changed`
 
     return {

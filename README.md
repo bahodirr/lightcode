@@ -52,8 +52,6 @@ AI-powered headless coding agent.
 ```
 packages/
 ├── opencode/   # Core headless agent server
-├── sdk/        # Client SDK (@opencode-ai/sdk)
-├── plugin/     # Plugin system (@opencode-ai/plugin)
 └── util/       # Shared utilities
 ```
 
@@ -85,17 +83,6 @@ bun test
 | `turbo.json` | Turbo pipeline config |
 | `tsconfig.json` | TypeScript config |
 | `package.json` → `"prettier"` | Prettier config (no semi, 120 chars) |
-
-## Publishing
-
-```bash
-# SDK
-NPM_TAG=latest bun run packages/sdk/js/script/publish.ts
-
-# Plugin
-NPM_TAG=latest bun run packages/plugin/script/publish.ts
-```
-
 
 Host vs Workspace — quick mental model
 
@@ -145,10 +132,5 @@ Host vs Workspace — quick mental model
 
   - Provider SDKs (AWS, etc): host‑scoped
     (BunProc.install into Global.Path.cache, imported by host process)
-  - Plugins:
-      - Installed globally (host cache)
-      - Instantiated per workspace (state + workspace context)
   - Formatters & LSP installs:
     workspace‑scoped (run inside sandbox)
-  - Config plugin install (@opencode-ai/plugin):
-    now workspace‑scoped (runs in sandbox)

@@ -1,15 +1,13 @@
 import { test, expect } from "bun:test"
 import { Skill } from "../../src/skill"
-import { SystemPrompt } from "../../src/session/system"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import path from "path"
 
-test("discovers skills from .opencode/skill/ directory", async () => {
+test("discovers skills from skill/ directory", async () => {
   await using tmp = await tmpdir({
-    git: true,
     init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "test-skill")
+      const skillDir = path.join(dir, "skill", "test-skill")
       await Bun.write(
         path.join(skillDir, "SKILL.md"),
         `---
@@ -37,11 +35,10 @@ Instructions here.
   })
 })
 
-test("discovers multiple skills from .opencode/skill/ directory", async () => {
+test("discovers multiple skills from skill/ directory", async () => {
   await using tmp = await tmpdir({
-    git: true,
     init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "my-skill")
+      const skillDir = path.join(dir, "skill", "my-skill")
       await Bun.write(
         path.join(skillDir, "SKILL.md"),
         `---
@@ -67,9 +64,8 @@ description: Another test skill.
 
 test("skips skills with missing frontmatter", async () => {
   await using tmp = await tmpdir({
-    git: true,
     init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "no-frontmatter")
+      const skillDir = path.join(dir, "skill", "no-frontmatter")
       await Bun.write(
         path.join(skillDir, "SKILL.md"),
         `# No Frontmatter
@@ -90,7 +86,7 @@ Just some content without YAML frontmatter.
 })
 
 test("returns empty array when no skills exist", async () => {
-  await using tmp = await tmpdir({ git: true })
+  await using tmp = await tmpdir()
 
   await Instance.provide({
     directory: tmp.path,

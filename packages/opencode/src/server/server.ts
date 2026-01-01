@@ -2,7 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { GlobalBus } from "@/bus/global"
 import { Log } from "../util/log"
-import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi"
+import { describeRoute, validator, resolver } from "hono-openapi"
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { stream, streamSSE } from "hono/streaming"
@@ -16,31 +16,24 @@ import { ModelsDev } from "../provider/models"
 import { Ripgrep } from "../file/ripgrep"
 import { Config } from "../config/config"
 import { File } from "../file"
-import { LSP } from "../lsp"
-import { Format } from "../format"
 import { MessageV2 } from "../session/message-v2"
 import { Permission } from "../permission"
 import { Instance } from "../project/instance"
-import { Vcs } from "../project/vcs"
 import { Agent } from "../agent/agent"
 import { Auth } from "../auth"
 import { Command } from "../command"
-import { ProviderAuth } from "../provider/auth"
 import { Global } from "../global"
 import { ProjectRoute } from "./project"
 import { ToolRegistry } from "../tool/registry"
 import { zodToJsonSchema } from "zod-to-json-schema"
 import { SessionPrompt } from "../session/prompt"
 import { SessionCompaction } from "../session/compaction"
-import { SessionRevert } from "../session/revert"
 import { lazy } from "../util/lazy"
 import { Todo } from "../session/todo"
 import { InstanceBootstrap } from "../project/bootstrap"
 import { MCP } from "../mcp"
 import { Storage } from "../storage/storage"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
-import { Snapshot } from "@/snapshot"
-import { SessionSummary } from "@/session/summary"
 import { SessionStatus } from "@/session/status"
 import { upgradeWebSocket, websocket } from "hono/bun"
 import { errors } from "./error"
@@ -222,19 +215,6 @@ export namespace Server {
           },
         })
       })
-      .get(
-        "/doc",
-        openAPIRouteHandler(app, {
-          documentation: {
-            info: {
-              title: "opencode",
-              version: "0.0.3",
-              description: "opencode api",
-            },
-            openapi: "3.1.1",
-          },
-        }),
-      )
       .use(validator("query", z.object({ directory: z.string().optional() })))
 
       .route("/project", ProjectRoute)
@@ -558,7 +538,6 @@ export namespace Server {
                         home: z.string(),
                         state: z.string(),
                         config: z.string(),
-                        worktree: z.string(),
                         directory: z.string(),
                       })
                       .meta({
@@ -575,32 +554,7 @@ export namespace Server {
             home: Global.Path.home,
             state: Global.Path.state,
             config: Global.Path.config,
-            worktree: Instance.worktree,
             directory: Instance.directory,
-          })
-        },
-      )
-      .get(
-        "/vcs",
-        describeRoute({
-          summary: "Get VCS info",
-          description: "Retrieve version control system (VCS) information for the current project, such as git branch.",
-          operationId: "vcs.get",
-          responses: {
-            200: {
-              description: "VCS info",
-              content: {
-                "application/json": {
-                  schema: resolver(Vcs.Info),
-                },
-              },
-            },
-          },
-        }),
-        async (c) => {
-          const branch = await Vcs.branch()
-          return c.json({
-            branch,
           })
         },
       )
@@ -945,107 +899,6 @@ export namespace Server {
         },
       )
       .post(
-        "/session/:sessionID/share",
-        describeRoute({
-          summary: "Share session",
-          description: "Create a shareable link for a session, allowing others to view the conversation.",
-          operationId: "session.share",
-          responses: {
-            200: {
-              description: "Successfully shared session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: z.string(),
-          }),
-        ),
-        async (c) => {
-          const sessionID = c.req.valid("param").sessionID
-          await Session.share(sessionID)
-          const session = await Session.get(sessionID)
-          return c.json(session)
-        },
-      )
-      .get(
-        "/session/:sessionID/diff",
-        describeRoute({
-          summary: "Get message diff",
-          description: "Get the file changes (diff) that resulted from a specific user message in the session.",
-          operationId: "session.diff",
-          responses: {
-            200: {
-              description: "Successfully retrieved diff",
-              content: {
-                "application/json": {
-                  schema: resolver(Snapshot.FileDiff.array()),
-                },
-              },
-            },
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: SessionSummary.diff.schema.shape.sessionID,
-          }),
-        ),
-        validator(
-          "query",
-          z.object({
-            messageID: SessionSummary.diff.schema.shape.messageID,
-          }),
-        ),
-        async (c) => {
-          const query = c.req.valid("query")
-          const params = c.req.valid("param")
-          const result = await SessionSummary.diff({
-            sessionID: params.sessionID,
-            messageID: query.messageID,
-          })
-          return c.json(result)
-        },
-      )
-      .delete(
-        "/session/:sessionID/share",
-        describeRoute({
-          summary: "Unshare session",
-          description: "Remove the shareable link for a session, making it private again.",
-          operationId: "session.unshare",
-          responses: {
-            200: {
-              description: "Successfully unshared session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: Session.unshare.schema,
-          }),
-        ),
-        async (c) => {
-          const sessionID = c.req.valid("param").sessionID
-          await Session.unshare(sessionID)
-          const session = await Session.get(sessionID)
-          return c.json(session)
-        },
-      )
-      .post(
         "/session/:sessionID/summarize",
         describeRoute({
           summary: "Summarize session",
@@ -1080,8 +933,6 @@ export namespace Server {
         async (c) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
-          const session = await Session.get(sessionID)
-          await SessionRevert.cleanup(session)
           const msgs = await Session.messages({ sessionID })
           let currentAgent = await Agent.defaultAgent()
           for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1141,35 +992,6 @@ export namespace Server {
             limit: query.limit,
           })
           return c.json(messages)
-        },
-      )
-      .get(
-        "/session/:sessionID/diff",
-        describeRoute({
-          summary: "Get session diff",
-          description: "Get all file changes (diffs) made during this session.",
-          operationId: "session.diff",
-          responses: {
-            200: {
-              description: "List of diffs",
-              content: {
-                "application/json": {
-                  schema: resolver(Snapshot.FileDiff.array()),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: z.string().meta({ description: "Session ID" }),
-          }),
-        ),
-        async (c) => {
-          const diff = await Session.diff(c.req.valid("param").sessionID)
-          return c.json(diff)
         },
       )
       .get(
@@ -1426,71 +1248,6 @@ export namespace Server {
         },
       )
       .post(
-        "/session/:sessionID/revert",
-        describeRoute({
-          summary: "Revert message",
-          description: "Revert a specific message in a session, undoing its effects and restoring the previous state.",
-          operationId: "session.revert",
-          responses: {
-            200: {
-              description: "Updated session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: z.string(),
-          }),
-        ),
-        validator("json", SessionRevert.RevertInput.omit({ sessionID: true })),
-        async (c) => {
-          const sessionID = c.req.valid("param").sessionID
-          log.info("revert", c.req.valid("json"))
-          const session = await SessionRevert.revert({
-            sessionID,
-            ...c.req.valid("json"),
-          })
-          return c.json(session)
-        },
-      )
-      .post(
-        "/session/:sessionID/unrevert",
-        describeRoute({
-          summary: "Restore reverted messages",
-          description: "Restore all previously reverted messages in a session.",
-          operationId: "session.unrevert",
-          responses: {
-            200: {
-              description: "Updated session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            sessionID: z.string(),
-          }),
-        ),
-        async (c) => {
-          const sessionID = c.req.valid("param").sessionID
-          const session = await SessionRevert.unrevert({ sessionID })
-          return c.json(session)
-        },
-      )
-      .post(
         "/session/:sessionID/permissions/:permissionID",
         describeRoute({
           summary: "Respond to permission",
@@ -1630,109 +1387,6 @@ export namespace Server {
         },
       )
       .get(
-        "/provider/auth",
-        describeRoute({
-          summary: "Get provider auth methods",
-          description: "Retrieve available authentication methods for all AI providers.",
-          operationId: "provider.auth",
-          responses: {
-            200: {
-              description: "Provider auth methods",
-              content: {
-                "application/json": {
-                  schema: resolver(z.record(z.string(), z.array(ProviderAuth.Method))),
-                },
-              },
-            },
-          },
-        }),
-        async (c) => {
-          return c.json(await ProviderAuth.methods())
-        },
-      )
-      .post(
-        "/provider/:providerID/oauth/authorize",
-        describeRoute({
-          summary: "OAuth authorize",
-          description: "Initiate OAuth authorization for a specific AI provider to get an authorization URL.",
-          operationId: "provider.oauth.authorize",
-          responses: {
-            200: {
-              description: "Authorization URL and method",
-              content: {
-                "application/json": {
-                  schema: resolver(ProviderAuth.Authorization.optional()),
-                },
-              },
-            },
-            ...errors(400),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            providerID: z.string().meta({ description: "Provider ID" }),
-          }),
-        ),
-        validator(
-          "json",
-          z.object({
-            method: z.number().meta({ description: "Auth method index" }),
-          }),
-        ),
-        async (c) => {
-          const providerID = c.req.valid("param").providerID
-          const { method } = c.req.valid("json")
-          const result = await ProviderAuth.authorize({
-            providerID,
-            method,
-          })
-          return c.json(result)
-        },
-      )
-      .post(
-        "/provider/:providerID/oauth/callback",
-        describeRoute({
-          summary: "OAuth callback",
-          description: "Handle the OAuth callback from a provider after user authorization.",
-          operationId: "provider.oauth.callback",
-          responses: {
-            200: {
-              description: "OAuth callback processed successfully",
-              content: {
-                "application/json": {
-                  schema: resolver(z.boolean()),
-                },
-              },
-            },
-            ...errors(400),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            providerID: z.string().meta({ description: "Provider ID" }),
-          }),
-        ),
-        validator(
-          "json",
-          z.object({
-            method: z.number().meta({ description: "Auth method index" }),
-            code: z.string().optional().meta({ description: "OAuth authorization code" }),
-          }),
-        ),
-        async (c) => {
-          const providerID = c.req.valid("param").providerID
-          const { method, code } = c.req.valid("json")
-          await ProviderAuth.callback({
-            providerID,
-            method,
-            code,
-          })
-          return c.json(true)
-        },
-      )
-      .get(
         "/find",
         describeRoute({
           summary: "Find text",
@@ -1798,38 +1452,6 @@ export namespace Server {
             dirs: dirs !== "false",
           })
           return c.json(results)
-        },
-      )
-      .get(
-        "/find/symbol",
-        describeRoute({
-          summary: "Find symbols",
-          description: "Search for workspace symbols like functions, classes, and variables using LSP.",
-          operationId: "find.symbols",
-          responses: {
-            200: {
-              description: "Symbols",
-              content: {
-                "application/json": {
-                  schema: resolver(LSP.Symbol.array()),
-                },
-              },
-            },
-          },
-        }),
-        validator(
-          "query",
-          z.object({
-            query: z.string(),
-          }),
-        ),
-        async (c) => {
-          /*
-          const query = c.req.valid("query").query
-          const result = await LSP.workspaceSymbol(query)
-          return c.json(result)
-          */
-          return c.json([])
         },
       )
       .get(
@@ -2200,48 +1822,6 @@ export namespace Server {
           return c.json(true)
         },
       )
-      .get(
-        "/lsp",
-        describeRoute({
-          summary: "Get LSP status",
-          description: "Get LSP server status",
-          operationId: "lsp.status",
-          responses: {
-            200: {
-              description: "LSP server status",
-              content: {
-                "application/json": {
-                  schema: resolver(LSP.Status.array()),
-                },
-              },
-            },
-          },
-        }),
-        async (c) => {
-          return c.json(await LSP.status())
-        },
-      )
-      .get(
-        "/formatter",
-        describeRoute({
-          summary: "Get formatter status",
-          description: "Get formatter status",
-          operationId: "formatter.status",
-          responses: {
-            200: {
-              description: "Formatter status",
-              content: {
-                "application/json": {
-                  schema: resolver(Format.Status.array()),
-                },
-              },
-            },
-          },
-        }),
-        async (c) => {
-          return c.json(await Format.status())
-        },
-      )
       .put(
         "/auth/:providerID",
         describeRoute({
@@ -2339,20 +1919,6 @@ export namespace Server {
         })
       }),
   )
-
-  export async function openapi() {
-    const result = await generateSpecs(App(), {
-      documentation: {
-        info: {
-          title: "opencode",
-          version: "1.0.0",
-          description: "opencode api",
-        },
-        openapi: "3.1.1",
-      },
-    })
-    return result
-  }
 
   export function listen(opts: { port: number; hostname: string }) {
     const args = {
