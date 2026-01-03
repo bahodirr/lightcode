@@ -30,22 +30,39 @@ AI-powered headless coding agent.
 
 ## Current Change Review (Staged + Unstaged)
 
-**Unstaged (workspace-scoped systems)**
-- **Core workspace routing** `packages/opencode/src/workspace/`, `packages/opencode/src/project/instance.ts`, `packages/opencode/src/project/project.ts`, `packages/opencode/src/installation/index.ts`, `packages/opencode/src/pty/index.ts`, `packages/opencode/src/shell/shell.ts`, `packages/opencode/src/server/server.ts` (scope: workspace exec + env)
-- **File IO + patching + VCS** `packages/opencode/src/file/index.ts`, `packages/opencode/src/file/ripgrep.ts`, `packages/opencode/src/file/time.ts`, `packages/opencode/src/file/watcher.ts`, `packages/opencode/src/patch/index.ts`, `packages/opencode/src/project/vcs.ts`, `packages/opencode/src/util/filesystem.ts`, `packages/opencode/src/util/archive.ts` (scope: workspace fs/path)
-- **Tooling** `packages/opencode/src/tool/bash.ts`, `packages/opencode/src/tool/edit.ts`, `packages/opencode/src/tool/glob.ts`, `packages/opencode/src/tool/ls.ts`, `packages/opencode/src/tool/lsp-diagnostics.ts`, `packages/opencode/src/tool/lsp-hover.ts`, `packages/opencode/src/tool/lsp.ts`, `packages/opencode/src/tool/multiedit.ts`, `packages/opencode/src/tool/patch.ts`, `packages/opencode/src/tool/read.ts`, `packages/opencode/src/tool/registry.ts`, `packages/opencode/src/tool/skill.ts`, `packages/opencode/src/tool/write.ts` (scope: workspace proc/fs)
-- **LSP + formatters** `packages/opencode/src/lsp/client.ts`, `packages/opencode/src/lsp/index.ts`, `packages/opencode/src/lsp/server.ts`, `packages/opencode/src/format/index.ts`, `packages/opencode/src/format/formatter.ts` (scope: workspace exec for installs/runs)
-- **Sessions + snapshots + storage** `packages/opencode/src/session/prompt.ts`, `packages/opencode/src/session/summary.ts`, `packages/opencode/src/session/system.ts`, `packages/opencode/src/snapshot/index.ts`, `packages/opencode/src/storage/storage.ts` (scope: workspace data paths)
+File-by-file summary of the sandbox/Daytona refactor and related fixes.
 
-**Unstaged (host-scoped + mixed)**
-- **Host cache + workspace install** `packages/opencode/src/bun/index.ts` (host Global.Path cache/lock), `packages/opencode/src/config/config.ts` (workspace bun install into config dir)
-- **Docs** `README.md`
-
-**Unstaged tests**
-- `packages/opencode/test/agent/agent.test.ts`, `packages/opencode/test/config/agent-color.test.ts`, `packages/opencode/test/config/config.test.ts`, `packages/opencode/test/fixture/fixture.ts`, `packages/opencode/test/preload.ts`, `packages/opencode/test/project/project.test.ts`, `packages/opencode/test/snapshot/snapshot.test.ts`
-
-**Staged tests**
-- `packages/opencode/test/lsp/client.test.ts`, `packages/opencode/test/mcp/headers.test.ts`, `packages/opencode/test/provider/provider.test.ts`, `packages/opencode/test/session/session.test.ts`, `packages/opencode/test/skill/skill.test.ts`, `packages/opencode/test/tool/bash.test.ts`, `packages/opencode/test/tool/grep.test.ts`, `packages/opencode/test/tool/patch.test.ts`, `packages/opencode/test/tool/read.test.ts`
+- `LEARNING.md`: added a concise agent loop walkthrough.
+- `bun.lock`: dependency updates for Daytona support and workspace cleanup.
+- `packages/opencode/package.json`: adds `@daytonaio/sdk`.
+- `packages/opencode/src/config/config.ts`: config read/write now sandbox-aware, including `{file:...}` references.
+- `packages/opencode/src/config/markdown.ts`: frontmatter parsing reads through sandbox path resolution.
+- `packages/opencode/src/file/index.ts`: file status/read/list/search use sandbox fs/proc; mime-aware encoding.
+- `packages/opencode/src/file/ripgrep.ts`: prefer sandbox `rg`, run via sandbox proc; avoid shell quoting.
+- `packages/opencode/src/file/time.ts`: file mtime checks use sandbox fs.
+- `packages/opencode/src/patch/index.ts`: patch read/write/derive use sandbox; derive is async; delete is non-forced.
+- `packages/opencode/src/project/instance.ts`: Instance now includes sandbox + sandboxId; cache key includes sandboxId.
+- `packages/opencode/src/project/project.ts`: icon discovery reads via sandbox; safe guards around glob.
+- `packages/opencode/src/provider/models.local.json`: adds anthropic npm package; Sonnet 4 attachments enabled.
+- `packages/opencode/src/provider/provider.ts`: guards missing env list; skip custom loader if base provider missing.
+- `packages/opencode/src/pty/index.ts`: PTY feature removed.
+- `packages/opencode/src/sandbox/daytona.ts`: new Daytona sandbox; extension-based mime map.
+- `packages/opencode/src/sandbox/index.ts`: new Sandbox interface + local implementation.
+- `packages/opencode/src/server/server.ts`: supports `sandboxId` routing; PTY routes removed.
+- `packages/opencode/src/session/prompt.ts`: tool execution wrapped with Instance context; shell execution via sandbox proc.
+- `packages/opencode/src/session/system.ts`: only loads `AGENTS.md`/`CLAUDE.md`; config instruction globbing removed.
+- `packages/opencode/src/shell/shell.ts`: command args helper; corrected `-l -c` ordering; killTree uses Bun.spawn.
+- `packages/opencode/src/skill/skill.ts`: skill scanning constrained to sandbox paths; scan errors handled.
+- `packages/opencode/src/tool/bash.ts`: shell resolved per sandbox; execute via sandbox proc; path checks use sandbox.
+- `packages/opencode/src/tool/edit.ts`: edit reads/writes via sandbox fs; permission checks use sandbox paths.
+- `packages/opencode/src/tool/glob.ts`: sandbox path resolution and mtime stats.
+- `packages/opencode/src/tool/grep.ts`: run rg via sandbox proc; stats via sandbox fs.
+- `packages/opencode/src/tool/ls.ts`: list uses sandbox path resolution.
+- `packages/opencode/src/tool/multiedit.ts`: title uses sandbox relative paths.
+- `packages/opencode/src/tool/patch.ts`: patch tool uses sandbox fs; async patch derivation.
+- `packages/opencode/src/tool/read.ts`: read uses sandbox fs/mime; binary detection via sandbox bytes.
+- `packages/opencode/src/tool/registry.ts`: custom tool scan bounded to sandbox.
+- `packages/opencode/src/tool/write.ts`: write uses sandbox fs/path; external dir checks use sandbox.
 
 ## Packages
 

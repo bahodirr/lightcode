@@ -1,5 +1,4 @@
 import z from "zod"
-import path from "path"
 import { Tool } from "./tool"
 import DESCRIPTION from "./glob.txt"
 import { Ripgrep } from "../file/ripgrep"
@@ -17,8 +16,10 @@ export const GlobTool = Tool.define("glob", {
       ),
   }),
   async execute(params) {
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     let search = params.path ?? Instance.directory
-    search = path.isAbsolute(search) ? search : path.resolve(Instance.directory, search)
+    search = path.isAbsolute(search) ? search : path.resolve(search)
 
     const limit = 100
     const files = []
@@ -32,8 +33,8 @@ export const GlobTool = Tool.define("glob", {
         break
       }
       const full = path.resolve(search, file)
-      const stats = await Bun.file(full)
-        .stat()
+      const stats = await sandbox.fs
+        .stat(full)
         .then((x) => x.mtime.getTime())
         .catch(() => 0)
       files.push({

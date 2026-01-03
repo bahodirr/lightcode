@@ -4,7 +4,6 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import z from "zod"
-import * as path from "path"
 import { Tool } from "./tool"
 import { createTwoFilesPatch, diffLines } from "diff"
 import { Permission } from "../permission"
@@ -12,7 +11,6 @@ import DESCRIPTION from "./edit.txt"
 import { File } from "../file"
 import { Bus } from "../bus"
 import { FileTime } from "../file/time"
-import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 
@@ -38,9 +36,11 @@ export const EditTool = Tool.define("edit", {
     }
 
     const agent = await Agent.get(ctx.agent)
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
 
-    const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    if (!Filesystem.contains(Instance.directory, filePath)) {
+    const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.resolve(params.filePath)
+    if (!sandbox.contains(filePath)) {
       const parentDir = path.dirname(filePath)
       if (agent.permission.external_directory === "ask") {
         await Permission.ask({
@@ -89,7 +89,7 @@ export const EditTool = Tool.define("edit", {
             },
           })
         }
-        await Bun.write(filePath, params.newString)
+        await sandbox.fs.writeText(filePath, params.newString)
         await Bus.publish(File.Event.Edited, {
           file: filePath,
         })
@@ -97,12 +97,11 @@ export const EditTool = Tool.define("edit", {
         return
       }
 
-      const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => {})
+      const stats = await sandbox.fs.stat(filePath).catch(() => {})
       if (!stats) throw new Error(`File ${filePath} not found`)
-      if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
+      if (stats.isDir) throw new Error(`Path is a directory, not a file: ${filePath}`)
       await FileTime.assert(ctx.sessionID, filePath)
-      contentOld = await file.text()
+      contentOld = await sandbox.fs.readText(filePath)
       contentNew = replace(contentOld, params.oldString, params.newString, params.replaceAll)
 
       diff = trimDiff(
@@ -122,11 +121,11 @@ export const EditTool = Tool.define("edit", {
         })
       }
 
-      await file.write(contentNew)
+      await sandbox.fs.writeText(filePath, contentNew)
       await Bus.publish(File.Event.Edited, {
         file: filePath,
       })
-      contentNew = await file.text()
+      contentNew = await sandbox.fs.readText(filePath)
       diff = trimDiff(
         createTwoFilesPatch(filePath, filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew)),
       )

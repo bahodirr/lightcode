@@ -1,6 +1,3 @@
-import path from "path"
-import os from "os"
-import fs from "fs/promises"
 import z from "zod"
 import { Identifier } from "../id/id"
 import { MessageV2 } from "./message-v2"
@@ -27,9 +24,8 @@ import { ListTool } from "../tool/ls"
 import { FileTime } from "../file/time"
 import { Flag } from "../flag/flag"
 import { ulid } from "ulid"
-import { spawn } from "child_process"
 import { Command } from "../command"
-import { $, fileURLToPath } from "bun"
+import { fileURLToPath } from "bun"
 import { ConfigMarkdown } from "../config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/util/error"
@@ -148,6 +144,9 @@ export namespace SessionPrompt {
   })
 
   export async function resolvePromptParts(template: string): Promise<PromptInput["parts"]> {
+    const sandbox = Instance.sandbox
+    const sandboxPath = sandbox.path
+    const homedir = sandbox.os.homedir
     const parts: PromptInput["parts"] = [
       {
         type: "text",
@@ -162,10 +161,10 @@ export namespace SessionPrompt {
         if (seen.has(name)) return
         seen.add(name)
         const filepath = name.startsWith("~/")
-          ? path.join(os.homedir(), name.slice(2))
-          : path.resolve(Instance.directory, name)
+          ? sandboxPath.join(homedir, name.slice(2))
+          : sandboxPath.resolve(name)
 
-        const stats = await fs.stat(filepath).catch(() => undefined)
+        const stats = await sandbox.fs.stat(filepath).catch(() => undefined)
         if (!stats) {
           const agent = await Agent.get(name)
           if (agent) {
@@ -177,7 +176,7 @@ export namespace SessionPrompt {
           return
         }
 
-        if (stats.isDirectory()) {
+        if (stats.isDir) {
           parts.push({
             type: "file",
             url: `file://${filepath}`,
@@ -553,6 +552,8 @@ export namespace SessionPrompt {
     processor: SessionProcessor.Info
   }) {
     using _ = log.time("resolveTools")
+    // Capture instance context now - AI SDK callbacks may lose AsyncLocalStorage context
+    const instanceCtx = { directory: Instance.directory, sandboxId: Instance.sandboxId }
     const tools: Record<string, AITool> = {}
     const enabledTools = pipe(
       input.agent.tools,
@@ -567,32 +568,45 @@ export namespace SessionPrompt {
         description: item.description,
         inputSchema: jsonSchema(schema as any),
         async execute(args, options) {
-          const result = await item.execute(args, {
-            sessionID: input.sessionID,
-            abort: options.abortSignal!,
-            messageID: input.processor.message.id,
-            callID: options.toolCallId,
-            extra: { model: input.model },
-            agent: input.agent.name,
-            metadata: async (val) => {
-              const match = input.processor.partFromToolCall(options.toolCallId)
-              if (match && match.state.status === "running") {
-                await Session.updatePart({
-                  ...match,
-                  state: {
-                    title: val.title,
-                    metadata: val.metadata,
-                    status: "running",
-                    input: args,
-                    time: {
-                      start: Date.now(),
+          return Instance.provide({
+            directory: instanceCtx.directory,
+            sandboxId: instanceCtx.sandboxId,
+            fn: async () => {
+              const result = await item.execute(args, {
+                sessionID: input.sessionID,
+                abort: options.abortSignal!,
+                messageID: input.processor.message.id,
+                callID: options.toolCallId,
+                extra: { model: input.model },
+                agent: input.agent.name,
+                metadata: async (val) => {
+                  // Re-establish context - callback may run in different async tick
+                  return Instance.provide({
+                    directory: instanceCtx.directory,
+                    sandboxId: instanceCtx.sandboxId,
+                    fn: async () => {
+                      const match = input.processor.partFromToolCall(options.toolCallId)
+                      if (match && match.state.status === "running") {
+                        await Session.updatePart({
+                          ...match,
+                          state: {
+                            title: val.title,
+                            metadata: val.metadata,
+                            status: "running",
+                            input: args,
+                            time: {
+                              start: Date.now(),
+                            },
+                          },
+                        })
+                      }
                     },
-                  },
-                })
-              }
+                  })
+                },
+              })
+              return result
             },
           })
-          return result
         },
         toModelOutput(result) {
           return {
@@ -609,34 +623,40 @@ export namespace SessionPrompt {
 
       // Wrap execute to normalize output and attach content ordering.
       item.execute = async (args, opts) => {
-        const result = await execute(args, opts)
+        return Instance.provide({
+          directory: instanceCtx.directory,
+          sandboxId: instanceCtx.sandboxId,
+          fn: async () => {
+            const result = await execute(args, opts)
 
-        const textParts: string[] = []
-        const attachments: MessageV2.FilePart[] = []
+            const textParts: string[] = []
+            const attachments: MessageV2.FilePart[] = []
 
-        for (const contentItem of result.content) {
-          if (contentItem.type === "text") {
-            textParts.push(contentItem.text)
-          } else if (contentItem.type === "image") {
-            attachments.push({
-              id: Identifier.ascending("part"),
-              sessionID: input.sessionID,
-              messageID: input.processor.message.id,
-              type: "file",
-              mime: contentItem.mimeType,
-              url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-            })
-          }
-          // Add support for other types if needed
-        }
+            for (const contentItem of result.content) {
+              if (contentItem.type === "text") {
+                textParts.push(contentItem.text)
+              } else if (contentItem.type === "image") {
+                attachments.push({
+                  id: Identifier.ascending("part"),
+                  sessionID: input.sessionID,
+                  messageID: input.processor.message.id,
+                  type: "file",
+                  mime: contentItem.mimeType,
+                  url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+                })
+              }
+              // Add support for other types if needed
+            }
 
-        return {
-          title: "",
-          metadata: result.metadata ?? {},
-          output: textParts.join("\n\n"),
-          attachments,
-          content: result.content, // directly return content to preserve ordering when outputting to model
-        }
+            return {
+              title: "",
+              metadata: result.metadata ?? {},
+              output: textParts.join("\n\n"),
+              attachments,
+              content: result.content, // directly return content to preserve ordering when outputting to model
+            }
+          },
+        })
       }
       item.toModelOutput = (result) => {
         return {
@@ -650,6 +670,7 @@ export namespace SessionPrompt {
   }
 
   async function createUserMessage(input: PromptInput) {
+    const sandbox = Instance.sandbox
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
     const info: MessageV2.Info = {
       id: input.messageID ?? Identifier.ascending("message"),
@@ -702,9 +723,9 @@ export namespace SessionPrompt {
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
               const filepath = fileURLToPath(part.url)
-              const stat = await Bun.file(filepath).stat()
+              const stat = await sandbox.fs.stat(filepath)
 
-              if (stat.isDirectory()) {
+              if (stat.isDir) {
                 part.mime = "application/x-directory"
               }
 
@@ -834,7 +855,7 @@ export namespace SessionPrompt {
                 ]
               }
 
-              const file = Bun.file(filepath)
+              const fileBytes = await sandbox.fs.readBytes(filepath)
               FileTime.read(input.sessionID, filepath)
               return [
                 {
@@ -850,7 +871,7 @@ export namespace SessionPrompt {
                   messageID: info.id,
                   sessionID: input.sessionID,
                   type: "file",
-                  url: `data:${part.mime};base64,` + Buffer.from(await file.bytes()).toString("base64"),
+                  url: `data:${part.mime};base64,` + Buffer.from(fileBytes).toString("base64"),
                   mime: part.mime,
                   filename: part.filename!,
                   source: part.source,
@@ -1018,121 +1039,40 @@ export namespace SessionPrompt {
       },
     }
     await Session.updatePart(part)
-    const shell = Shell.preferred()
-    const shellName = (
-      process.platform === "win32" ? path.win32.basename(shell, ".exe") : path.basename(shell)
-    ).toLowerCase()
-
-    const invocations: Record<string, { args: string[] }> = {
-      nu: {
-        args: ["-c", input.command],
-      },
-      fish: {
-        args: ["-c", input.command],
-      },
-      zsh: {
-        args: [
-          "-c",
-          "-l",
-          `
-            [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
-            [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
-            eval ${JSON.stringify(input.command)}
-          `,
-        ],
-      },
-      bash: {
-        args: [
-          "-c",
-          "-l",
-          `
-            shopt -s expand_aliases
-            [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
-            eval ${JSON.stringify(input.command)}
-          `,
-        ],
-      },
-      // Windows cmd
-      cmd: {
-        args: ["/c", input.command],
-      },
-      // Windows PowerShell
-      powershell: {
-        args: ["-NoProfile", "-Command", input.command],
-      },
-      pwsh: {
-        args: ["-NoProfile", "-Command", input.command],
-      },
-      // Fallback: any shell that doesn't match those above
-      //  - No -l, for max compatibility
-      "": {
-        args: ["-c", `${input.command}`],
-      },
-    }
-
-    const matchingInvocation = invocations[shellName] ?? invocations[""]
-    const args = matchingInvocation?.args
-
-    const proc = spawn(shell, args, {
-      cwd: Instance.directory,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        TERM: "dumb",
-      },
-    })
+    const sandbox = Instance.sandbox
+    const shell = Instance.sandboxId
+      ? (await sandbox.proc.which("bash")) || (await sandbox.proc.which("sh")) || "/bin/sh"
+      : Shell.preferred()
+    const args = Instance.sandboxId ? ["-c", input.command] : Shell.commandArgs(shell, input.command)
 
     let output = ""
 
-    proc.stdout?.on("data", (chunk) => {
-      output += chunk.toString()
+    const append = (chunk: string) => {
+      output += chunk
       if (part.state.status === "running") {
         part.state.metadata = {
-          output: output,
+          output,
           description: "",
         }
         Session.updatePart(part)
       }
-    })
-
-    proc.stderr?.on("data", (chunk) => {
-      output += chunk.toString()
-      if (part.state.status === "running") {
-        part.state.metadata = {
-          output: output,
-          description: "",
-        }
-        Session.updatePart(part)
-      }
-    })
-
-    let aborted = false
-    let exited = false
-
-    const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-    if (abort.aborted) {
-      aborted = true
-      await kill()
     }
 
-    const abortHandler = () => {
-      aborted = true
-      void kill()
-    }
-
-    abort.addEventListener("abort", abortHandler, { once: true })
-
-    await new Promise<void>((resolve) => {
-      proc.on("close", () => {
-        exited = true
-        abort.removeEventListener("abort", abortHandler)
-        resolve()
-      })
+    const result = await sandbox.proc.spawn([shell, ...args], {
+      cwd: Instance.directory,
+      detached: process.platform !== "win32",
+      env: Instance.sandboxId
+        ? undefined
+        : {
+            ...process.env,
+            TERM: "dumb",
+          },
+      signal: abort,
+      onStdout: append,
+      onStderr: append,
     })
 
-    if (aborted) {
+    if (result.aborted) {
       output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
     }
     msg.time.completed = Date.now()
@@ -1201,12 +1141,25 @@ export namespace SessionPrompt {
     })
     let template = withArgs.replaceAll("$ARGUMENTS", input.arguments)
 
-    const shell = ConfigMarkdown.shell(template)
-    if (shell.length > 0) {
+    const shellBlocks = ConfigMarkdown.shell(template)
+    if (shellBlocks.length > 0) {
+      const sandbox = Instance.sandbox
+      const shell = Instance.sandboxId
+        ? (await sandbox.proc.which("bash")) || (await sandbox.proc.which("sh")) || "/bin/sh"
+        : Shell.preferred()
       const results = await Promise.all(
-        shell.map(async ([, cmd]) => {
+        shellBlocks.map(async ([, cmd]) => {
           try {
-            return await $`${{ raw: cmd }}`.quiet().nothrow().text()
+            const args = Instance.sandboxId ? ["-c", cmd] : Shell.commandArgs(shell, cmd)
+            const result = await sandbox.proc.run([shell, ...args], {
+              cwd: Instance.directory,
+              env: Instance.sandboxId ? undefined : { ...process.env },
+            })
+            if (result.exitCode !== 0) {
+              const msg = (result.stderr || result.stdout).trim()
+              return msg ? `Error executing command:\n${msg}` : `Error executing command (exit ${result.exitCode})`
+            }
+            return result.stdout
           } catch (error) {
             return `Error executing command: ${error instanceof Error ? error.message : String(error)}`
           }

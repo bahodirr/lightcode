@@ -35,19 +35,26 @@ export namespace ToolRegistry {
   export const state = Instance.state(async () => {
     const custom = [] as Tool.Info[]
     const glob = new Bun.Glob("tool/*.{js,ts}")
+    const sandbox = Instance.sandbox
 
     for (const dir of await Config.directories()) {
-      for await (const match of glob.scan({
-        cwd: dir,
-        absolute: true,
-        followSymlinks: true,
-        dot: true,
-      })) {
-        const namespace = path.basename(match, path.extname(match))
-        const mod = await import(match)
-        for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-          custom.push(fromToolDefinition(id === "default" ? namespace : `${namespace}_${id}`, def))
+      const isWorkspaceDir = sandbox.contains(dir)
+      try {
+        for await (const match of glob.scan({
+          cwd: dir,
+          absolute: true,
+          followSymlinks: true,
+          dot: true,
+        })) {
+          if (isWorkspaceDir && !sandbox.contains(match)) continue
+          const namespace = path.basename(match, path.extname(match))
+          const mod = await import(match)
+          for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
+            custom.push(fromToolDefinition(id === "default" ? namespace : `${namespace}_${id}`, def))
+          }
         }
+      } catch (error) {
+        log.debug("skipping custom tool scan", { dir, error })
       }
     }
 

@@ -1,6 +1,5 @@
 import z from "zod"
 import { Tool } from "./tool"
-import * as path from "path"
 import DESCRIPTION from "./ls.txt"
 import { Instance } from "../project/instance"
 import { Ripgrep } from "../file/ripgrep"
@@ -41,7 +40,13 @@ export const ListTool = Tool.define("list", {
     ignore: z.array(z.string()).describe("List of glob patterns to ignore").optional(),
   }),
   async execute(params) {
-    const searchPath = path.resolve(Instance.directory, params.path || ".")
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
+    const searchPath = params.path
+      ? path.isAbsolute(params.path)
+        ? params.path
+        : path.resolve(params.path)
+      : Instance.directory
 
     const ignoreGlobs = IGNORE_PATTERNS.map((p) => `!${p}*`).concat(params.ignore?.map((p) => `!${p}`) || [])
     const files = []

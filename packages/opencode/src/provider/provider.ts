@@ -82,7 +82,8 @@ export namespace Provider {
     async opencode(input) {
       const hasKey = await (async () => {
         const env = Env.all()
-        if (input.env.some((item) => env[item])) return true
+        const envKeys = input.env ?? []
+        if (envKeys.some((item) => env[item])) return true
         if (await Auth.get(input.id)) return true
         const config = await Config.get()
         if (config.provider?.["opencode"]?.options?.apiKey) return true
@@ -695,7 +696,9 @@ export namespace Provider {
 
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
       if (disabled.has(providerID)) continue
-      const result = await fn(database[providerID])
+      const base = database[providerID]
+      if (!base) continue
+      const result = await fn(base)
       if (result && (result.autoload || providers[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
         mergeProvider(providerID, {

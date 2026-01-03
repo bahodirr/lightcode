@@ -2,7 +2,6 @@ import z from "zod"
 import { Tool } from "./tool"
 import { EditTool } from "./edit"
 import DESCRIPTION from "./multiedit.txt"
-import path from "path"
 import { Instance } from "../project/instance"
 
 export const MultiEditTool = Tool.define("multiedit", {
@@ -21,6 +20,7 @@ export const MultiEditTool = Tool.define("multiedit", {
       .describe("Array of edit operations to perform sequentially on the file"),
   }),
   async execute(params, ctx) {
+    const sandbox = Instance.sandbox
     const tool = await EditTool.init()
     const results = []
     for (const [, edit] of params.edits.entries()) {
@@ -36,7 +36,7 @@ export const MultiEditTool = Tool.define("multiedit", {
       results.push(result)
     }
     return {
-      title: path.relative(Instance.directory, params.filePath),
+      title: sandbox.path.relative(Instance.directory, params.filePath),
       metadata: {
         results: results.map((r) => r.metadata),
       },

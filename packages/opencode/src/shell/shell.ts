@@ -1,21 +1,22 @@
 import { Flag } from "@/flag/flag"
 import { lazy } from "@/util/lazy"
 import path from "path"
-import { spawn, type ChildProcess } from "child_process"
 
 const SIGKILL_TIMEOUT_MS = 200
 
 export namespace Shell {
-  export async function killTree(proc: ChildProcess, opts?: { exited?: () => boolean }): Promise<void> {
+  type KillableProcess = { pid?: number | null; kill(signal?: NodeJS.Signals | number): void }
+
+  export async function killTree(proc: KillableProcess, opts?: { exited?: () => boolean }): Promise<void> {
     const pid = proc.pid
     if (!pid || opts?.exited?.()) return
 
     if (process.platform === "win32") {
-      await new Promise<void>((resolve) => {
-        const killer = spawn("taskkill", ["/pid", String(pid), "/f", "/t"], { stdio: "ignore" })
-        killer.once("exit", () => resolve())
-        killer.once("error", () => resolve())
-      })
+      try {
+        await Bun.spawn(["taskkill", "/pid", String(pid), "/f", "/t"], {
+          stdio: ["ignore", "ignore", "ignore"],
+        }).exited
+      } catch {}
       return
     }
 
@@ -64,4 +65,58 @@ export namespace Shell {
     if (s && !BLACKLIST.has(process.platform === "win32" ? path.win32.basename(s) : path.basename(s))) return s
     return fallback()
   })
+
+  export function commandArgs(shell: string, command: string): string[] {
+    const shellName = (process.platform === "win32" ? path.win32.basename(shell, ".exe") : path.basename(shell))
+      .toLowerCase()
+
+    const invocations: Record<string, { args: string[] }> = {
+      nu: {
+        args: ["-c", command],
+      },
+      fish: {
+        args: ["-c", command],
+      },
+      zsh: {
+        args: [
+          "-l",
+          "-c",
+          `
+            [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
+            [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
+            eval ${JSON.stringify(command)}
+          `,
+        ],
+      },
+      bash: {
+        args: [
+          "-l",
+          "-c",
+          `
+            shopt -s expand_aliases
+            [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
+            eval ${JSON.stringify(command)}
+          `,
+        ],
+      },
+      // Windows cmd
+      cmd: {
+        args: ["/c", command],
+      },
+      // Windows PowerShell
+      powershell: {
+        args: ["-NoProfile", "-Command", command],
+      },
+      pwsh: {
+        args: ["-NoProfile", "-Command", command],
+      },
+      // Fallback: any shell that doesn't match those above
+      //  - No -l, for max compatibility
+      "": {
+        args: ["-c", `${command}`],
+      },
+    }
+
+    return (invocations[shellName] ?? invocations[""]).args
+  }
 }

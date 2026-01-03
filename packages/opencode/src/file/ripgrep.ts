@@ -5,10 +5,10 @@ import fs from "fs/promises"
 import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { lazy } from "../util/lazy"
-import { $ } from "bun"
 
 import { ZipReader, BlobReader, BlobWriter } from "@zip.js/zip.js"
 import { Log } from "@/util/log"
+import { Instance } from "@/project/instance"
 
 export namespace Ripgrep {
   const log = Log.create({ service: "ripgrep" })
@@ -201,11 +201,14 @@ export namespace Ripgrep {
   })
 
   export async function filepath() {
+    const sandboxPath = await Instance.sandbox.proc.which("rg")
+    if (sandboxPath) return sandboxPath
     const { filepath } = await state()
     return filepath
   }
 
   export async function* files(input: { cwd: string; glob?: string[] }) {
+    const sandbox = Instance.sandbox
     const args = [await filepath(), "--files", "--follow", "--hidden", "--glob=!.git/*"]
     if (input.glob) {
       for (const g of input.glob) {
@@ -215,7 +218,8 @@ export namespace Ripgrep {
 
     // Bun.spawn should throw this, but it incorrectly reports that the executable does not exist.
     // See https://github.com/oven-sh/bun/issues/24012
-    if (!(await fs.stat(input.cwd).catch(() => undefined))?.isDirectory()) {
+    const stat = await sandbox.fs.stat(input.cwd).catch(() => undefined)
+    if (!stat?.isDir) {
       throw Object.assign(new Error(`No such file or directory: '${input.cwd}'`), {
         code: "ENOENT",
         errno: -2,
@@ -223,36 +227,11 @@ export namespace Ripgrep {
       })
     }
 
-    const proc = Bun.spawn(args, {
-      cwd: input.cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-      maxBuffer: 1024 * 1024 * 20,
-    })
-
-    const reader = proc.stdout.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ""
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        // Handle both Unix (\n) and Windows (\r\n) line endings
-        const lines = buffer.split(/\r?\n/)
-        buffer = lines.pop() || ""
-
-        for (const line of lines) {
-          if (line) yield line
-        }
-      }
-
-      if (buffer) yield buffer
-    } finally {
-      reader.releaseLock()
-      await proc.exited
+    const result = await sandbox.proc.run(args, { cwd: input.cwd })
+    if (result.exitCode !== 0) return
+    const lines = result.stdout.split(/\r?\n/).filter(Boolean)
+    for (const line of lines) {
+      yield line
     }
   }
 
@@ -359,7 +338,8 @@ export namespace Ripgrep {
   }
 
   export async function search(input: { cwd: string; pattern: string; glob?: string[]; limit?: number }) {
-    const args = [`${await filepath()}`, "--json", "--hidden", "--glob='!.git/*'"]
+    const sandbox = Instance.sandbox
+    const args = [`${await filepath()}`, "--json", "--hidden", "--glob=!.git/*"]
 
     if (input.glob) {
       for (const g of input.glob) {
@@ -374,14 +354,13 @@ export namespace Ripgrep {
     args.push("--")
     args.push(input.pattern)
 
-    const command = args.join(" ")
-    const result = await $`${{ raw: command }}`.cwd(input.cwd).quiet().nothrow()
-    if (result.exitCode !== 0) {
+    const result = await sandbox.proc.run(args, { cwd: input.cwd }).catch(() => undefined)
+    if (!result || result.exitCode !== 0) {
       return []
     }
 
     // Handle both Unix (\n) and Windows (\r\n) line endings
-    const lines = result.text().trim().split(/\r?\n/).filter(Boolean)
+    const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean)
     // Parse JSON lines from ripgrep output
 
     return lines

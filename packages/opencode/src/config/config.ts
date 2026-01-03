@@ -549,10 +549,21 @@ export namespace Config {
     return result
   })
 
+  async function readText(filepath: string): Promise<string> {
+    const sandbox = Instance.sandbox
+    if (sandbox.contains(filepath)) return sandbox.fs.readText(filepath)
+    return Bun.file(filepath).text()
+  }
+
+  async function writeText(filepath: string, content: string): Promise<void> {
+    const sandbox = Instance.sandbox
+    if (sandbox.contains(filepath)) return sandbox.fs.writeText(filepath, content)
+    await Bun.write(filepath, content)
+  }
+
   async function loadFile(filepath: string): Promise<Info> {
     log.info("loading", { path: filepath })
-    let text = await Bun.file(filepath)
-      .text()
+    let text = await readText(filepath)
       .catch((err) => {
         if (err.code === "ENOENT") return
         throw new JsonError({ path: filepath }, { cause: err })
@@ -582,21 +593,19 @@ export namespace Config {
         }
         const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(configDir, filePath)
         const fileContent = (
-          await Bun.file(resolvedPath)
-            .text()
-            .catch((error) => {
-              const errMsg = `bad file reference: "${match}"`
-              if (error.code === "ENOENT") {
-                throw new InvalidError(
-                  {
-                    path: configFilepath,
-                    message: errMsg + ` ${resolvedPath} does not exist`,
-                  },
-                  { cause: error },
-                )
-              }
-              throw new InvalidError({ path: configFilepath, message: errMsg }, { cause: error })
-            })
+          await readText(resolvedPath).catch((error) => {
+            const errMsg = `bad file reference: "${match}"`
+            if (error.code === "ENOENT") {
+              throw new InvalidError(
+                {
+                  path: configFilepath,
+                  message: errMsg + ` ${resolvedPath} does not exist`,
+                },
+                { cause: error },
+              )
+            }
+            throw new InvalidError({ path: configFilepath, message: errMsg }, { cause: error })
+          })
         ).trim()
         // escape newlines/quotes, strip outer quotes
         text = text.replace(match, JSON.stringify(fileContent).slice(1, -1))
@@ -631,7 +640,7 @@ export namespace Config {
     if (parsed.success) {
       if (!parsed.data.$schema) {
         parsed.data.$schema = "https://opencode.ai/config.json"
-        await Bun.write(configFilepath, JSON.stringify(parsed.data, null, 2))
+        await writeText(configFilepath, JSON.stringify(parsed.data, null, 2))
       }
       const data = parsed.data
       return data
@@ -666,7 +675,7 @@ export namespace Config {
   export async function update(config: Info) {
     const filepath = path.join(Instance.directory, "config.json")
     const existing = await loadFile(filepath)
-    await Bun.write(filepath, JSON.stringify(mergeDeep(existing, config), null, 2))
+    await writeText(filepath, JSON.stringify(mergeDeep(existing, config), null, 2))
     await Instance.dispose()
   }
 

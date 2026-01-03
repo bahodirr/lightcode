@@ -1,13 +1,10 @@
 import z from "zod"
-import * as path from "path"
-import * as fs from "fs/promises"
 import { Tool } from "./tool"
 import { FileTime } from "../file/time"
 import { Permission } from "../permission"
 import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 import { Patch } from "../patch"
-import { Filesystem } from "../util/filesystem"
 import { createTwoFilesPatch } from "diff"
 
 const PatchParams = z.object({
@@ -38,6 +35,8 @@ export const PatchTool = Tool.define("patch", {
 
     // Validate file paths and check permissions
     const agent = await Agent.get(ctx.agent)
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     const fileChanges: Array<{
       filePath: string
       oldContent: string
@@ -49,9 +48,9 @@ export const PatchTool = Tool.define("patch", {
     let totalDiff = ""
 
     for (const hunk of hunks) {
-      const filePath = path.resolve(Instance.directory, hunk.path)
+      const filePath = path.resolve(hunk.path)
 
-      if (!Filesystem.contains(Instance.directory, filePath)) {
+      if (!sandbox.contains(filePath)) {
         const parentDir = path.dirname(filePath)
         if (agent.permission.external_directory === "ask") {
           await Permission.ask({
@@ -100,19 +99,19 @@ export const PatchTool = Tool.define("patch", {
 
         case "update":
           // Check if file exists for update
-          const stats = await fs.stat(filePath).catch(() => null)
-          if (!stats || stats.isDirectory()) {
+          const stats = await sandbox.fs.stat(filePath).catch(() => null)
+          if (!stats || stats.isDir) {
             throw new Error(`File not found or is directory: ${filePath}`)
           }
 
           // Read file and update time tracking (like edit tool does)
           await FileTime.assert(ctx.sessionID, filePath)
-          const oldContent = await fs.readFile(filePath, "utf-8")
+          const oldContent = await sandbox.fs.readText(filePath)
           let newContent = oldContent
 
           // Apply the update chunks to get new content
           try {
-            const fileUpdate = Patch.deriveNewContentsFromChunks(filePath, hunk.chunks)
+            const fileUpdate = await Patch.deriveNewContentsFromChunks(filePath, hunk.chunks)
             newContent = fileUpdate.content
           } catch (error) {
             throw new Error(`Failed to apply update to ${filePath}: ${error}`)
@@ -125,7 +124,7 @@ export const PatchTool = Tool.define("patch", {
             oldContent,
             newContent,
             type: hunk.move_path ? "move" : "update",
-            movePath: hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined,
+            movePath: hunk.move_path ? path.resolve(hunk.move_path) : undefined,
           })
 
           totalDiff += diff + "\n"
@@ -134,7 +133,7 @@ export const PatchTool = Tool.define("patch", {
         case "delete":
           // Check if file exists for deletion
           await FileTime.assert(ctx.sessionID, filePath)
-          const contentToDelete = await fs.readFile(filePath, "utf-8")
+          const contentToDelete = await sandbox.fs.readText(filePath)
           const deleteDiff = createTwoFilesPatch(filePath, filePath, contentToDelete, "")
 
           fileChanges.push({
@@ -172,14 +171,14 @@ export const PatchTool = Tool.define("patch", {
           // Create parent directories
           const addDir = path.dirname(change.filePath)
           if (addDir !== "." && addDir !== "/") {
-            await fs.mkdir(addDir, { recursive: true })
+            await sandbox.fs.mkdirp(addDir)
           }
-          await fs.writeFile(change.filePath, change.newContent, "utf-8")
+          await sandbox.fs.writeText(change.filePath, change.newContent)
           changedFiles.push(change.filePath)
           break
 
         case "update":
-          await fs.writeFile(change.filePath, change.newContent, "utf-8")
+          await sandbox.fs.writeText(change.filePath, change.newContent)
           changedFiles.push(change.filePath)
           break
 
@@ -188,18 +187,18 @@ export const PatchTool = Tool.define("patch", {
             // Create parent directories for destination
             const moveDir = path.dirname(change.movePath)
             if (moveDir !== "." && moveDir !== "/") {
-              await fs.mkdir(moveDir, { recursive: true })
+              await sandbox.fs.mkdirp(moveDir)
             }
             // Write to new location
-            await fs.writeFile(change.movePath, change.newContent, "utf-8")
+            await sandbox.fs.writeText(change.movePath, change.newContent)
             // Remove original
-            await fs.unlink(change.filePath)
+            await sandbox.fs.rm(change.filePath)
             changedFiles.push(change.movePath)
           }
           break
 
         case "delete":
-          await fs.unlink(change.filePath)
+          await sandbox.fs.rm(change.filePath)
           changedFiles.push(change.filePath)
           break
       }

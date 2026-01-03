@@ -1,12 +1,7 @@
 import { BusEvent } from "@/bus/bus-event"
 import z from "zod"
-import { $ } from "bun"
-import type { BunFile } from "bun"
-import path from "path"
-import fs from "fs"
 import ignore from "ignore"
 import { Log } from "../util/log"
-import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
@@ -52,8 +47,8 @@ export namespace File {
     })
   export type Content = z.infer<typeof Content>
 
-  async function shouldEncode(file: BunFile): Promise<boolean> {
-    const type = file.type?.toLowerCase()
+  async function shouldEncode(mime?: string): Promise<boolean> {
+    const type = mime?.toLowerCase()
     log.info("shouldEncode", { type })
     if (!type) return false
 
@@ -99,7 +94,12 @@ export namespace File {
   }
 
   export async function status() {
-    const diffOutput = await $`git diff --numstat HEAD`.cwd(Instance.directory).quiet().nothrow().text()
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
+    const diffOutput = await sandbox.proc
+      .run(["git", "diff", "--numstat", "HEAD"], { cwd: Instance.directory })
+      .then((result) => result.stdout)
+      .catch(() => "")
 
     const changedFiles: Info[] = []
 
@@ -116,17 +116,17 @@ export namespace File {
       }
     }
 
-    const untrackedOutput = await $`git ls-files --others --exclude-standard`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
+    const untrackedOutput = await sandbox.proc
+      .run(["git", "ls-files", "--others", "--exclude-standard"], { cwd: Instance.directory })
+      .then((result) => result.stdout)
+      .catch(() => "")
 
     if (untrackedOutput.trim()) {
       const untrackedFiles = untrackedOutput.trim().split("\n")
       for (const filepath of untrackedFiles) {
         try {
-          const content = await Bun.file(path.join(Instance.directory, filepath)).text()
+          const fullPath = path.resolve(filepath)
+          const content = await sandbox.fs.readText(fullPath)
           const lines = content.split("\n").length
           changedFiles.push({
             path: filepath,
@@ -141,11 +141,10 @@ export namespace File {
     }
 
     // Get deleted files
-    const deletedOutput = await $`git diff --name-only --diff-filter=D HEAD`
-      .cwd(Instance.directory)
-      .quiet()
-      .nothrow()
-      .text()
+    const deletedOutput = await sandbox.proc
+      .run(["git", "diff", "--name-only", "--diff-filter=D", "HEAD"], { cwd: Instance.directory })
+      .then((result) => result.stdout)
+      .catch(() => "")
 
     if (deletedOutput.trim()) {
       const deletedFiles = deletedOutput.trim().split("\n")
@@ -167,68 +166,61 @@ export namespace File {
 
   export async function read(file: string): Promise<Content> {
     using _ = log.time("read", { file })
-    const full = path.join(Instance.directory, file)
+    const sandbox = Instance.sandbox
+    const full = sandbox.path.resolve(file)
 
-    // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
+    // TODO: Sandbox.contains is lexical only - symlinks inside the project can escape.
     // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
-    if (!Filesystem.contains(Instance.directory, full)) {
+    if (!sandbox.contains(full)) {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
-    const bunFile = Bun.file(full)
-
-    if (!(await bunFile.exists())) {
+    if (!(await sandbox.fs.exists(full))) {
       return { type: "text", content: "" }
     }
 
-    const encode = await shouldEncode(bunFile)
+    const mimeType = sandbox.fs.mime(full)
+    const encode = await shouldEncode(mimeType)
 
     if (encode) {
-      const buffer = await bunFile.arrayBuffer().catch(() => new ArrayBuffer(0))
+      const buffer = await sandbox.fs.readBytes(full).catch(() => new Uint8Array(0))
       const content = Buffer.from(buffer).toString("base64")
-      const mimeType = bunFile.type || "application/octet-stream"
-      return { type: "text", content, mimeType, encoding: "base64" }
+      const mimeTypeOrDefault = mimeType || "application/octet-stream"
+      return { type: "text", content, mimeType: mimeTypeOrDefault, encoding: "base64" }
     }
 
-    const content = await bunFile
-      .text()
-      .catch(() => "")
-      .then((x) => x.trim())
+    const content = await sandbox.fs.readText(full).catch(() => "").then((x) => x.trim())
 
     return { type: "text", content }
   }
 
   export async function list(dir?: string) {
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     const exclude = [".git", ".DS_Store"]
     let ignored = (_: string) => false
     const ig = ignore()
-    const gitignore = Bun.file(path.join(Instance.directory, ".gitignore"))
-    if (await gitignore.exists()) {
-      ig.add(await gitignore.text())
+    if (await sandbox.fs.exists(".gitignore")) {
+      ig.add(await sandbox.fs.readText(".gitignore"))
     }
-    const ignoreFile = Bun.file(path.join(Instance.directory, ".ignore"))
-    if (await ignoreFile.exists()) {
-      ig.add(await ignoreFile.text())
+    if (await sandbox.fs.exists(".ignore")) {
+      ig.add(await sandbox.fs.readText(".ignore"))
     }
     ignored = ig.ignores.bind(ig)
-    const resolved = dir ? path.join(Instance.directory, dir) : Instance.directory
+    const resolved = dir ? path.resolve(dir) : Instance.directory
 
-    // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
+    // TODO: Sandbox.contains is lexical only - symlinks inside the project can escape.
     // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
-    if (!Filesystem.contains(Instance.directory, resolved)) {
+    if (!sandbox.contains(resolved)) {
       throw new Error(`Access denied: path escapes project directory`)
     }
 
     const nodes: Node[] = []
-    for (const entry of await fs.promises
-      .readdir(resolved, {
-        withFileTypes: true,
-      })
-      .catch(() => [])) {
+    for (const entry of await sandbox.fs.readdir(resolved).catch(() => [])) {
       if (exclude.includes(entry.name)) continue
-      const fullPath = path.join(resolved, entry.name)
+      const fullPath = entry.path
       const relativePath = path.relative(Instance.directory, fullPath)
-      const type = entry.isDirectory() ? "directory" : "file"
+      const type = entry.isDir ? "directory" : "file"
       nodes.push({
         name: entry.name,
         path: relativePath,
@@ -247,6 +239,8 @@ export namespace File {
 
   export async function search(input: { query: string; limit?: number; dirs?: boolean }) {
     log.info("search", { query: input.query })
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     const limit = input.limit ?? 100
     const files = await Array.fromAsync(Ripgrep.files({ cwd: Instance.directory }))
     const dirs = [] as string[]

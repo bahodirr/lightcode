@@ -1,5 +1,4 @@
 import z from "zod"
-import { spawn } from "child_process"
 import { Tool } from "./tool"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "../util/log"
@@ -7,13 +6,10 @@ import { Instance } from "../project/instance"
 import { lazy } from "@/util/lazy"
 import { Language } from "web-tree-sitter"
 import { Agent } from "@/agent/agent"
-import { $ } from "bun"
-import { Filesystem } from "@/util/filesystem"
 import { Wildcard } from "@/util/wildcard"
 import { Permission } from "@/permission"
 import { fileURLToPath } from "url"
 import { Flag } from "@/flag/flag.ts"
-import path from "path"
 import { Shell } from "@/shell/shell"
 
 const MAX_OUTPUT_LENGTH = Flag.OPENCODE_EXPERIMENTAL_BASH_MAX_OUTPUT_LENGTH || 30_000
@@ -51,9 +47,12 @@ const parser = lazy(async () => {
 
 // TODO: we may wanna rename this tool so it works better on other shells
 export const BashTool = Tool.define("bash", async () => {
-  const shell = Shell.acceptable()
+  // Determine shell inside the sandbox, not on the host
+  const sandbox = Instance.sandbox
+  const shell = Instance.sandboxId
+    ? (await sandbox.proc.which("bash")) || (await sandbox.proc.which("sh")) || "/bin/sh"
+    : Shell.acceptable()
   log.info("bash tool using shell", { shell })
-
   return {
     description: DESCRIPTION.replaceAll("${directory}", Instance.directory),
     parameters: z.object({
@@ -72,7 +71,13 @@ export const BashTool = Tool.define("bash", async () => {
         ),
     }),
     async execute(params, ctx) {
-      const cwd = params.workdir || Instance.directory
+      const sandbox = Instance.sandbox
+      const path = sandbox.path
+      const cwd = params.workdir
+        ? path.isAbsolute(params.workdir)
+          ? params.workdir
+          : path.resolve(params.workdir)
+        : Instance.directory
       if (params.timeout !== undefined && params.timeout < 0) {
         throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
       }
@@ -84,7 +89,7 @@ export const BashTool = Tool.define("bash", async () => {
       const agent = await Agent.get(ctx.agent)
 
       const checkExternalDirectory = async (dir: string) => {
-        if (Filesystem.contains(Instance.directory, dir)) return
+        if (sandbox.contains(dir)) return
         const title = `This command references paths outside of ${Instance.directory}`
         if (agent.permission.external_directory === "ask") {
           await Permission.ask({
@@ -138,11 +143,10 @@ export const BashTool = Tool.define("bash", async () => {
         if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown"].includes(command[0])) {
           for (const arg of command.slice(1)) {
             if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
-            const resolved = await $`realpath ${arg}`
-              .quiet()
-              .nothrow()
-              .text()
-              .then((x) => x.trim())
+            const resolved = await sandbox.proc
+              .run(["realpath", arg], { cwd })
+              .then((result) => result.stdout.trim())
+              .catch(() => "")
             log.info("resolved path", { arg, resolved })
             if (resolved) {
               // Git Bash on Windows returns Unix-style paths like /c/Users/...
@@ -195,16 +199,6 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
-      const proc = spawn(params.command, {
-        shell,
-        cwd,
-        env: {
-          ...process.env,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-      })
-
       let output = ""
 
       // Initialize metadata with empty output
@@ -215,9 +209,9 @@ export const BashTool = Tool.define("bash", async () => {
         },
       })
 
-      const append = (chunk: Buffer) => {
+      const append = (chunk: string) => {
         if (output.length <= MAX_OUTPUT_LENGTH) {
-          output += chunk.toString()
+          output += chunk
           ctx.metadata({
             metadata: {
               output,
@@ -227,49 +221,16 @@ export const BashTool = Tool.define("bash", async () => {
         }
       }
 
-      proc.stdout?.on("data", append)
-      proc.stderr?.on("data", append)
-
-      let timedOut = false
-      let aborted = false
-      let exited = false
-
-      const kill = () => Shell.killTree(proc, { exited: () => exited })
-
-      if (ctx.abort.aborted) {
-        aborted = true
-        await kill()
-      }
-
-      const abortHandler = () => {
-        aborted = true
-        void kill()
-      }
-
-      ctx.abort.addEventListener("abort", abortHandler, { once: true })
-
-      const timeoutTimer = setTimeout(() => {
-        timedOut = true
-        void kill()
-      }, timeout + 100)
-
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          clearTimeout(timeoutTimer)
-          ctx.abort.removeEventListener("abort", abortHandler)
-        }
-
-        proc.once("exit", () => {
-          exited = true
-          cleanup()
-          resolve()
-        })
-
-        proc.once("error", (error) => {
-          exited = true
-          cleanup()
-          reject(error)
-        })
+      // For Daytona sandboxes, use simple -c execution (complex bashrc sourcing gets mangled)
+      const args = Instance.sandboxId ? ["-c", params.command] : Shell.commandArgs(shell, params.command)
+      const result = await sandbox.proc.spawn([shell, ...args], {
+        cwd,
+        env: Instance.sandboxId ? undefined : { ...process.env },
+        detached: process.platform !== "win32",
+        timeoutMs: timeout + 100,
+        signal: ctx.abort,
+        onStdout: append,
+        onStderr: append,
       })
 
       let resultMetadata: String[] = ["<bash_metadata>"]
@@ -279,11 +240,11 @@ export const BashTool = Tool.define("bash", async () => {
         resultMetadata.push(`bash tool truncated output as it exceeded ${MAX_OUTPUT_LENGTH} char limit`)
       }
 
-      if (timedOut) {
+      if (result.timedOut) {
         resultMetadata.push(`bash tool terminated commmand after exceeding timeout ${timeout} ms`)
       }
 
-      if (aborted) {
+      if (result.aborted) {
         resultMetadata.push("User aborted the command")
       }
 
@@ -296,7 +257,7 @@ export const BashTool = Tool.define("bash", async () => {
         title: params.description,
         metadata: {
           output,
-          exit: proc.exitCode,
+          exit: result.exitCode,
           description: params.description,
         },
         output,

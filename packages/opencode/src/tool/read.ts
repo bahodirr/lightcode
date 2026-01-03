@@ -1,10 +1,7 @@
 import z from "zod"
-import * as fs from "fs"
-import * as path from "path"
 import { Tool } from "./tool"
 import { FileTime } from "../file/time"
 import DESCRIPTION from "./read.txt"
-import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Identifier } from "../id/id"
 import { Permission } from "../permission"
@@ -22,14 +19,16 @@ export const ReadTool = Tool.define("read", {
     limit: z.coerce.number().describe("The number of lines to read (defaults to 2000)").optional(),
   }),
   async execute(params, ctx) {
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     let filepath = params.filePath
     if (!path.isAbsolute(filepath)) {
-      filepath = path.join(process.cwd(), filepath)
+      filepath = path.resolve(filepath)
     }
     const title = path.relative(Instance.directory, filepath)
     const agent = await Agent.get(ctx.agent)
 
-    if (!ctx.extra?.["bypassCwdCheck"] && !Filesystem.contains(Instance.directory, filepath)) {
+    if (!ctx.extra?.["bypassCwdCheck"] && !sandbox.contains(filepath)) {
       const parentDir = path.dirname(filepath)
       if (agent.permission.external_directory === "ask") {
         await Permission.ask({
@@ -73,18 +72,18 @@ export const ReadTool = Tool.define("read", {
       throw new Error(`The user has blocked you from reading ${filepath}, DO NOT make further attempts to read it`)
     }
 
-    const file = Bun.file(filepath)
-    if (!(await file.exists())) {
+    const mime = sandbox.fs.mime(filepath)
+    if (!(await sandbox.fs.exists(filepath))) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
 
-      const dirEntries = fs.readdirSync(dir)
+      const dirEntries = await sandbox.fs.readdir(dir).catch(() => [])
       const suggestions = dirEntries
         .filter(
           (entry) =>
-            entry.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(entry.toLowerCase()),
+            entry.name.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(entry.name.toLowerCase()),
         )
-        .map((entry) => path.join(dir, entry))
+        .map((entry) => path.join(dir, entry.name))
         .slice(0, 3)
 
       if (suggestions.length > 0) {
@@ -94,11 +93,12 @@ export const ReadTool = Tool.define("read", {
       throw new Error(`File not found: ${filepath}`)
     }
 
-    const isImage = file.type.startsWith("image/") && file.type !== "image/svg+xml"
-    const isPdf = file.type === "application/pdf"
+    const isImage = !!mime && mime.startsWith("image/") && mime !== "image/svg+xml"
+    const isPdf = mime === "application/pdf"
     if (isImage || isPdf) {
-      const mime = file.type
       const msg = `${isImage ? "Image" : "PDF"} read successfully`
+      const data = await sandbox.fs.readBytes(filepath)
+      const mimeType = mime || "application/octet-stream"
       return {
         title,
         output: msg,
@@ -111,19 +111,19 @@ export const ReadTool = Tool.define("read", {
             sessionID: ctx.sessionID,
             messageID: ctx.messageID,
             type: "file",
-            mime,
-            url: `data:${mime};base64,${Buffer.from(await file.bytes()).toString("base64")}`,
+            mime: mimeType,
+            url: `data:${mimeType};base64,${Buffer.from(data).toString("base64")}`,
           },
         ],
       }
     }
 
-    const isBinary = await isBinaryFile(filepath, file)
+    const isBinary = await isBinaryFile(filepath)
     if (isBinary) throw new Error(`Cannot read binary file: ${filepath}`)
 
     const limit = params.limit ?? DEFAULT_READ_LIMIT
     const offset = params.offset || 0
-    const lines = await file.text().then((text) => text.split("\n"))
+    const lines = await sandbox.fs.readText(filepath).then((text) => text.split("\n"))
     const raw = lines.slice(offset, offset + limit).map((line) => {
       return line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) + "..." : line
     })
@@ -158,8 +158,8 @@ export const ReadTool = Tool.define("read", {
   },
 })
 
-async function isBinaryFile(filepath: string, file: Bun.BunFile): Promise<boolean> {
-  const ext = path.extname(filepath).toLowerCase()
+async function isBinaryFile(filepath: string): Promise<boolean> {
+  const ext = Instance.sandbox.path.extname(filepath).toLowerCase()
   // binary check for common non-text extensions
   switch (ext) {
     case ".zip":
@@ -195,14 +195,14 @@ async function isBinaryFile(filepath: string, file: Bun.BunFile): Promise<boolea
       break
   }
 
-  const stat = await file.stat()
+  const stat = await Instance.sandbox.fs.stat(filepath)
   const fileSize = stat.size
   if (fileSize === 0) return false
 
   const bufferSize = Math.min(4096, fileSize)
-  const buffer = await file.arrayBuffer()
-  if (buffer.byteLength === 0) return false
-  const bytes = new Uint8Array(buffer.slice(0, bufferSize))
+  const buffer = await Instance.sandbox.fs.readBytes(filepath)
+  if (buffer.length === 0) return false
+  const bytes = buffer.slice(0, bufferSize)
 
   let nonPrintableCount = 0
   for (let i = 0; i < bytes.length; i++) {

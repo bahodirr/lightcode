@@ -1,6 +1,7 @@
 import { NamedError } from "@opencode-ai/util/error"
 import matter from "gray-matter"
 import { z } from "zod"
+import { Instance } from "../project/instance"
 
 export namespace ConfigMarkdown {
   export const FILE_REGEX = /(?<![\w`])@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)/g
@@ -15,7 +16,10 @@ export namespace ConfigMarkdown {
   }
 
   export async function parse(filePath: string) {
-    const template = await Bun.file(filePath).text()
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
+    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(filePath)
+    const template = await (sandbox.contains(resolved) ? sandbox.fs.readText(resolved) : Bun.file(resolved).text())
 
     try {
       const md = matter(template)
@@ -23,7 +27,7 @@ export namespace ConfigMarkdown {
     } catch (err) {
       throw new FrontmatterError(
         {
-          path: filePath,
+          path: resolved,
           message: `Failed to parse YAML frontmatter: ${err instanceof Error ? err.message : String(err)}`,
         },
         { cause: err },

@@ -1,9 +1,6 @@
 import { Ripgrep } from "../file/ripgrep"
-import { Config } from "../config/config"
 
 import { Instance } from "../project/instance"
-import path from "path"
-import os from "os"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
@@ -54,48 +51,21 @@ export namespace SystemPrompt {
     "CLAUDE.md",
   ]
   export async function custom() {
-    const config = await Config.get()
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
     const paths = new Set<string>()
 
     for (const localRuleFile of LOCAL_RULE_FILES) {
       const candidate = path.join(Instance.directory, localRuleFile)
-      if (await Bun.file(candidate).exists()) {
+      if (await sandbox.fs.exists(candidate)) {
         paths.add(candidate)
         break
       }
     }
 
-    if (config.instructions) {
-      for (let instruction of config.instructions) {
-        if (instruction.startsWith("~/")) {
-          instruction = path.join(os.homedir(), instruction.slice(2))
-        }
-        let matches: string[] = []
-        if (path.isAbsolute(instruction)) {
-          matches = await Array.fromAsync(
-            new Bun.Glob(path.basename(instruction)).scan({
-              cwd: path.dirname(instruction),
-              absolute: true,
-              onlyFiles: true,
-            }),
-          ).catch(() => [])
-        } else {
-          matches = await Array.fromAsync(
-            new Bun.Glob(instruction).scan({
-              cwd: Instance.directory,
-              absolute: true,
-              onlyFiles: true,
-              dot: true,
-            }),
-          ).catch(() => [])
-        }
-        matches.forEach((match) => paths.add(match))
-      }
-    }
-
     const found = Array.from(paths).map((p) =>
-      Bun.file(p)
-        .text()
+      sandbox.fs
+        .readText(p)
         .catch(() => "")
         .then((x) => "Instructions from: " + p + "\n" + x),
     )

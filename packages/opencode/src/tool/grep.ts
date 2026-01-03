@@ -19,7 +19,13 @@ export const GrepTool = Tool.define("grep", {
       throw new Error("pattern is required")
     }
 
-    const searchPath = params.path || Instance.directory
+    const sandbox = Instance.sandbox
+    const path = sandbox.path
+    const searchPath = params.path
+      ? path.isAbsolute(params.path)
+        ? params.path
+        : path.resolve(params.path)
+      : Instance.directory
 
     const rgPath = await Ripgrep.filepath()
     const args = ["-nH", "--field-match-separator=|", "--regexp", params.pattern]
@@ -28,14 +34,10 @@ export const GrepTool = Tool.define("grep", {
     }
     args.push(searchPath)
 
-    const proc = Bun.spawn([rgPath, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-
-    const output = await new Response(proc.stdout).text()
-    const errorOutput = await new Response(proc.stderr).text()
-    const exitCode = await proc.exited
+    const result = await sandbox.proc.run([rgPath, ...args])
+    const output = result.stdout
+    const errorOutput = result.stderr
+    const exitCode = result.exitCode
 
     if (exitCode === 1) {
       return {
@@ -62,8 +64,7 @@ export const GrepTool = Tool.define("grep", {
       const lineNum = parseInt(lineNumStr, 10)
       const lineText = lineTextParts.join("|")
 
-      const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => null)
+      const stats = await sandbox.fs.stat(filePath).catch(() => null)
       if (!stats) continue
 
       matches.push({

@@ -7,6 +7,8 @@ import { work } from "../util/queue"
 import { fn } from "@opencode-ai/util/fn"
 import { BusEvent } from "@/bus/bus-event"
 import { GlobalBus } from "@/bus/global"
+import { create as createSandbox } from "@/sandbox"
+import type { Sandbox } from "@/sandbox"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
@@ -36,7 +38,7 @@ export namespace Project {
     Updated: BusEvent.define("project.updated", Info),
   }
 
-  export async function fromDirectory(directory: string) {
+  export async function fromDirectory(directory: string, options?: { sandbox?: Sandbox }) {
     log.info("fromDirectory", { directory })
 
     const directoryPath = directory
@@ -56,7 +58,7 @@ export namespace Project {
         await migrateFromGlobal(id, directoryPath)
       }
     }
-    if (Flag.OPENCODE_EXPERIMENTAL_ICON_DISCOVERY) discover(existing)
+    if (Flag.OPENCODE_EXPERIMENTAL_ICON_DISCOVERY) discover(existing, options?.sandbox)
     const result: Info = {
       ...existing,
       directory: directoryPath,
@@ -75,24 +77,30 @@ export namespace Project {
     return result
   }
 
-  export async function discover(input: Info) {
+  export async function discover(input: Info, sandboxOverride?: Sandbox) {
     if (input.icon?.url) return
+    const sandbox = sandboxOverride ?? createSandbox(input.directory)
     const glob = new Bun.Glob("**/{favicon}.{ico,png,svg,jpg,jpeg,webp}")
-    const matches = await Array.fromAsync(
-      glob.scan({
-        cwd: input.directory,
-        absolute: true,
-        onlyFiles: true,
-        followSymlinks: false,
-        dot: false,
-      }),
-    )
+    let matches: string[] = []
+    try {
+      matches = await Array.fromAsync(
+        glob.scan({
+          cwd: input.directory,
+          absolute: true,
+          onlyFiles: true,
+          followSymlinks: false,
+          dot: false,
+        }),
+      )
+    } catch {
+      return
+    }
     const shortest = matches.sort((a, b) => a.length - b.length)[0]
     if (!shortest) return
-    const file = Bun.file(shortest)
-    const buffer = await file.arrayBuffer()
+    if (!sandbox.contains(shortest)) return
+    const buffer = await sandbox.fs.readBytes(shortest)
     const base64 = Buffer.from(buffer).toString("base64")
-    const mime = file.type || "image/png"
+    const mime = sandbox.fs.mime(shortest) || "image/png"
     const url = `data:${mime};base64,${base64}`
     await update({
       projectID: input.id,

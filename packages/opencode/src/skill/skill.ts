@@ -37,36 +37,43 @@ export namespace Skill {
   export const state = Instance.state(async () => {
     const directories = await Config.directories()
     const skills: Record<string, Info> = {}
+    const sandbox = Instance.sandbox
 
     for (const dir of directories) {
-      for await (const match of SKILL_GLOB.scan({
-        cwd: dir,
-        absolute: true,
-        onlyFiles: true,
-        followSymlinks: true,
-      })) {
-        const md = await ConfigMarkdown.parse(match)
-        if (!md) {
-          continue
-        }
+      const isWorkspaceDir = sandbox.contains(dir)
+      try {
+        for await (const match of SKILL_GLOB.scan({
+          cwd: dir,
+          absolute: true,
+          onlyFiles: true,
+          followSymlinks: true,
+        })) {
+          if (isWorkspaceDir && !sandbox.contains(match)) continue
+          const md = await ConfigMarkdown.parse(match)
+          if (!md) {
+            continue
+          }
 
-        const parsed = Info.pick({ name: true, description: true }).safeParse(md.data)
-        if (!parsed.success) continue
+          const parsed = Info.pick({ name: true, description: true }).safeParse(md.data)
+          if (!parsed.success) continue
 
-        // Warn on duplicate skill names
-        if (skills[parsed.data.name]) {
-          log.warn("duplicate skill name", {
+          // Warn on duplicate skill names
+          if (skills[parsed.data.name]) {
+            log.warn("duplicate skill name", {
+              name: parsed.data.name,
+              existing: skills[parsed.data.name].location,
+              duplicate: match,
+            })
+          }
+
+          skills[parsed.data.name] = {
             name: parsed.data.name,
-            existing: skills[parsed.data.name].location,
-            duplicate: match,
-          })
+            description: parsed.data.description,
+            location: match,
+          }
         }
-
-        skills[parsed.data.name] = {
-          name: parsed.data.name,
-          description: parsed.data.description,
-          location: match,
-        }
+      } catch (error) {
+        log.debug("skipping skill scan", { dir, error })
       }
     }
 
